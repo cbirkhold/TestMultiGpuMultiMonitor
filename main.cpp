@@ -84,7 +84,14 @@ namespace {
     LRESULT CALLBACK window_callback(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         if ((uMsg == WM_ERASEBKGND) || (uMsg == WM_PAINT)) {
-            return TRUE;
+            if (GetPropA(hWnd, "IGNORE_PAINT_MESSAGES") == nullptr) {
+                return DefWindowProc(hWnd, uMsg, wParam, lParam);
+            }
+            else {
+                //------------------------------------------------------------------------------
+                // "An application returns zero if it processes this message." [WM_PAINT docs]
+                return 0;
+            }
         }
 
         if (uMsg == WM_DISPLAYCHANGE) {
@@ -890,6 +897,7 @@ create_mosaic_window(std::shared_ptr<Display> mosaic_display)
 
     ShowWindow(window, SW_SHOWDEFAULT);
     UpdateWindow(window);
+    SetPropA(window, "IGNORE_PAINT_MESSAGES", HANDLE(1));
 
     //------------------------------------------------------------------------------
     // Setup the display context.
@@ -1139,11 +1147,7 @@ main(int argc, char* argv[])
             glClear(GL_COLOR_BUFFER_BIT);
             
             glfwSwapBuffers(control_window);
-
-            GetMessage(&message, nullptr, 0, 0);
-            TranslateMessage(&message);
-            DispatchMessage(&message);
-
+            glfwPollEvents();
 
             time += (1.0 / 30.0);
             time = fmodf(time, 1.0);
