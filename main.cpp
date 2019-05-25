@@ -853,7 +853,7 @@ create_mosaic_window(std::shared_ptr<Display> mosaic_display)
     // "An OpenGL window should be created with the WS_CLIPCHILDREN and
     // WS_CLIPSIBLINGS styles. Additionally, the window class attribute should NOT
     // include the CS_PARENTDC style." [SetPixelFormat documentation]
-    const DWORD style = (WS_OVERLAPPED | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+    const DWORD style = (WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
 
     PIXELFORMATDESCRIPTOR pixel_format_desc = {};
     {
