@@ -796,14 +796,16 @@ create_control_window(std::shared_ptr<Display> control_display)
 
     //------------------------------------------------------------------------------
     // Create main GLFW window.
-    GLFWwindow* const control_window = glfwCreateWindow((control_display->virtual_screen_rect().m_width - 200), (control_display->virtual_screen_rect().m_height - 200), "VMI Player", NULL, NULL);
+    const long inset = 100;
+
+    GLFWwindow* const control_window = glfwCreateWindow((control_display->virtual_screen_rect().m_width - (inset * 2)), (control_display->virtual_screen_rect().m_height - (inset * 2)), "VMI Player", NULL, NULL);
 
     if (!control_window) {
         throw std::runtime_error("Failed to create main window!");
     }
 
     glfwSetKeyCallback(control_window, &control_window_key_callback);
-    glfwSetWindowPos(control_window, (control_display->virtual_screen_rect().m_x + 100), (control_display->virtual_screen_rect().m_y + 100));
+    glfwSetWindowPos(control_window, (control_display->virtual_screen_rect().m_x + inset), (control_display->virtual_screen_rect().m_y + inset));
     glfwShowWindow(control_window);
 
     //------------------------------------------------------------------------------
