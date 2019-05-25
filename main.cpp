@@ -9,6 +9,7 @@
 #include <iostream>
 #include <iomanip>
 #include <list>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -16,9 +17,17 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define WIN32_LEAN_AND_MEAN
-#include <dxgi1_6.h>
 #include <Windows.h>
-#include <wrl.h>
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define GLFW_EXPOSE_NATIVE_WGL
+#define GLFW_EXPOSE_NATIVE_WIN32
+#define GLFW_INCLUDE_NONE
+
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -32,11 +41,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include "OpenGLUtilities.h"
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-using namespace Microsoft::WRL;
+#include "main.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -44,35 +49,19 @@ using namespace Microsoft::WRL;
 namespace {
 
     //------------------------------------------------------------------------------
-    // WGL_NV_gpu_affinity
+    // Constants
     //------------------------------------------------------------------------------
 
-#ifndef WGL_NV_gpu_affinity
+    constexpr int GL_CONTEXT_VERSION_MAJOR = 4;
+    constexpr int GL_CONTEXT_VERSION_MINOR = 1;
 
-    DECLARE_HANDLE(HGPUNV);
+#ifndef NDEBUG
+    constexpr int GL_OPENGL_DEBUG_CONTEXT = GLFW_TRUE;
+#else // NDEBUG
+    constexpr int GL_OPENGL_DEBUG_CONTEXT = GLFW_FALSE;
+#endif // NDEBUG
 
-    typedef struct _GPU_DEVICE {
-        DWORD  cb;
-        CHAR   DeviceName[32];
-        CHAR   DeviceString[128];
-        DWORD  Flags;
-        RECT   rcVirtualScreen;
-    } GPU_DEVICE, *PGPU_DEVICE;
-
-    typedef BOOL(WINAPI* wglEnumGpusNV_f)(UINT iGpuIndex, HGPUNV* phGpu);
-    typedef BOOL(WINAPI* wglEnumGpuDevicesNV_f)(HGPUNV hGpu, UINT iDeviceIndex, PGPU_DEVICE lpGpuDevice);
-
-    typedef HDC(WINAPI* wglCreateAffinityDCNV_f)(const HGPUNV *phGpuList);
-    typedef BOOL(WINAPI* wglEnumGpusFromAffinityDCNV_f)(HDC hAffinityDC, UINT iGpuIndex, HGPUNV *hGpu);
-    typedef BOOL(WINAPI* wglDeleteDCNV_f)(HDC hdc);
-
-    wglEnumGpusNV_f wglEnumGpusNV = nullptr;
-    wglEnumGpuDevicesNV_f wglEnumGpuDevicesNV = nullptr;
-    wglCreateAffinityDCNV_f wglCreateAffinityDCNV = nullptr;
-    wglEnumGpusFromAffinityDCNV_f wglEnumGpusFromAffinityDCNV = nullptr;
-    wglDeleteDCNV_f wglDeleteDCNV = nullptr;
-
-#endif // WGL_NV_gpu_affinity
+    constexpr char GLSL_VERSION[] = "#version 150";
 
     //------------------------------------------------------------------------------
     // Utilities
@@ -105,17 +94,23 @@ namespace {
         return DefWindowProc(hWnd, uMsg, wParam, lParam);
     }
 
+    void glfw_error_callback(int error, const char* const description)
+    {
+        std::cerr << "GLFW: " << description << std::endl;
+    }
+
     void print_to_stream(std::ostream& stream, const NV_MOSAIC_GRID_TOPO& display_grid, const std::string& indent)
     {
-        stream << indent << display_grid.rows << "x" << display_grid.columns << " (" << display_grid.displayCount << (display_grid.displayCount == 1 ? " display)" : " displays)") << std::endl;
-        stream << indent << display_grid.displaySettings.width << "x" << display_grid.displaySettings.height << " @ " << display_grid.displaySettings.freq << " Hz" << std::endl;
+        stream << indent << display_grid.rows << "x" << display_grid.columns << " (" << display_grid.displayCount << (display_grid.displayCount == 1 ? " display) " : " displays) ");
+        stream << display_grid.displaySettings.width << "x" << display_grid.displaySettings.height << " @ " << display_grid.displaySettings.freq << " Hz";
+        stream << " = " << (display_grid.displaySettings.width * display_grid.columns) << "x" << (display_grid.displaySettings.height * display_grid.rows) << std::endl;
 
         for (size_t r = 0; r < display_grid.rows; ++r) {
             for (size_t c = 0; c < display_grid.columns; ++c) {
-                std::cout << indent << "[" << r << "," << c << "] 0x" << std::hex << std::setfill('0') << std::setw(8) << display_grid.displays[c + (r * display_grid.columns)].displayId << std::dec << std::endl;
-            }
+                const NvU32 display_id = display_grid.displays[c + (r * display_grid.columns)].displayId;
 
-            std::cout << std::endl;
+                std::cout << indent << "[" << r << "," << c << "] 0x" << std::hex << std::setfill('0') << std::setw(8) << display_id << std::dec;
+            }
         }
     }
 
@@ -423,178 +418,223 @@ namespace {
 
     uint8_t pixels[4][64 * 64 * 4];
 
+    //------------------------------------------------------------------------------
+    // DisplayConfiguration
+    //------------------------------------------------------------------------------
+
     typedef struct rect_s {
         long        m_x = 0;
         long        m_y = 0;
         long        m_width = 0;
         long        m_height = 0;
+
+        rect_s() {}
+        rect_s(long x, long y, long w, long h) : m_x(x), m_y(y), m_width(w), m_height(h) {}
     } rect_t;
 
-    rect_t virtual_screen;
-    long num_virtual_screen_monitors = 0;
-    std::vector<rect_t> virtual_screen_monitors;
-
-    //------------------------------------------------------------------------------
-    // Windows API
-    //------------------------------------------------------------------------------
-
-    int windows()
+    class Display
     {
-        std::cout << "[Windows API]" << std::endl;
+    public:
 
-        //------------------------------------------------------------------------------
-        // Get the Virtual Screen geometry.
-        virtual_screen.m_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        virtual_screen.m_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        virtual_screen.m_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        virtual_screen.m_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        num_virtual_screen_monitors = GetSystemMetrics(SM_CMONITORS);
-
-        std::cout << std::endl;
-        std::cout << "Virtual Screen origin: " << virtual_screen.m_x << " / " << virtual_screen.m_y << std::endl;
-        std::cout << "Virtual Screen size: " << virtual_screen.m_width << " x " << virtual_screen.m_height << std::endl;
-        std::cout << "Virtual Screen spans " << num_virtual_screen_monitors << " monitor(s)" << std::endl;
-
-        //------------------------------------------------------------------------------
-        // Enumerate display devices.
-        std::cout << std::endl;
-
-        DISPLAY_DEVICE display_device = {};
-        display_device.cb = sizeof(display_device);
-
-        DWORD display_device_index = 0;
-
-        while (EnumDisplayDevices(nullptr, display_device_index, &display_device, 0)) {
-            std::cout << "Display " << display_device.DeviceName << ", " << display_device.DeviceString << std::endl;
-            std::cout << "  " << display_device.DeviceID << std::endl;
-            std::cout << "  " << display_device.DeviceKey << std::endl;
-            std::cout << "  "; print_display_flags_to_stream(std::cout, display_device.StateFlags); std::cout << std::endl;
-
-            ++display_device_index;
-
-            DEVMODE device_mode = {};
-            device_mode.dmSize = sizeof(device_mode);
-
-            //------------------------------------------------------------------------------
-            // Enumerate/Get current display settings.
-            if ((0)) {
-                DWORD mode_index = 0;
-
-                while (EnumDisplaySettingsEx(display_device.DeviceName, mode_index, &device_mode, 0)) {
-                    std::cout << "  " << device_mode.dmPelsWidth << " x " << device_mode.dmPelsHeight << " @ " << device_mode.dmDisplayFrequency << " Hz" << std::endl;
-                    ++mode_index;
-                }
-            }
-            else {
-                if (EnumDisplaySettingsEx(display_device.DeviceName, ENUM_CURRENT_SETTINGS, &device_mode, 0)) {
-                    std::cout << "  " << device_mode.dmPelsWidth << " x " << device_mode.dmPelsHeight << " @ " << device_mode.dmDisplayFrequency << " Hz" << std::endl;
-                }
-            }
-        }
-
-        //------------------------------------------------------------------------------
-        // Enumerate display monitors.
-        //
-        // Each physical display is represented by a monitor handle of type HMONITOR. 
-        std::cout << std::endl;
-
-        if (EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC display_context, LPRECT virtual_screen_rect, LPARAM user_data) {
-            //------------------------------------------------------------------------------
-            // Add to list of monitors making up the virtual screen.
-            rect_t virtual_screen_monitor = {};
-            {
-                virtual_screen_monitor.m_x = virtual_screen_rect->left;
-                virtual_screen_monitor.m_y = virtual_screen_rect->top;
-                virtual_screen_monitor.m_width = (virtual_screen_rect->right - virtual_screen_rect->left);
-                virtual_screen_monitor.m_height = (virtual_screen_rect->bottom - virtual_screen_rect->top);
-            }
-
-            virtual_screen_monitors.push_back(virtual_screen_monitor);
-
-            //------------------------------------------------------------------------------
-            // Get additional monitor info.
-            MONITORINFOEX monitor_info = {};
-            monitor_info.cbSize = sizeof(monitor_info);
-
-            bool is_primary = false;
-
-            if (GetMonitorInfo(monitor, &monitor_info) != 0) {
-                std::cout << "Monitor " << monitor_info.szDevice << ": ";
-                is_primary = ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) == MONITORINFOF_PRIMARY);
-            }
-            else {
-                std::cout << "Monitor 0x" << monitor << ": ";
-            }
-
-            std::cout << "(" << virtual_screen_monitor.m_x << " / " << virtual_screen_monitor.m_y << ") [" << virtual_screen_monitor.m_width << " x " << virtual_screen_monitor.m_height << "]";
-
-            if (is_primary) {
-                std::cout << " (primary)";
-            }
-
-            std::cout << std::endl;
-
-            return TRUE;
-        }, 0) == 0)
+        Display(std::string name, const rect_t& virtual_screen_rect)
+            : m_name(std::move(name))
+            , m_virtual_screen_rect(virtual_screen_rect)
         {
-            std::cerr << "Error: Failed to enumerate monitors!" << std::endl;
-            return EXIT_FAILURE;
+            if (m_name.empty()) {
+                throw std::runtime_error("Valid name expected!");
+            }
+
+            if ((m_virtual_screen_rect.m_width == 0) || (m_virtual_screen_rect.m_height == 0)) {
+                throw std::runtime_error("Valid virtual screen rect expected!");
+            }
         }
 
-        if (virtual_screen_monitors.size() != num_virtual_screen_monitors) {
-            std::cerr << "Warning: EnumDisplayMonitors() returned more monitors than GetSystemMetrics() reported to be part of the virtual screen!" << std::endl;
+        bool valid_non_mosaic() const noexcept {
+            if ((m_nv_display_id == 0) || (m_nv_display_handle == nullptr)) {
+                return false;
+            }
+
+            if ((m_nv_num_physical_gpus != 1) || (m_nv_mosaic_num_displays != 1)) {
+                return false;
+            }
+
+            return true;
         }
 
-        //------------------------------------------------------------------------------
-        // ...
-        return EXIT_SUCCESS;
-    }
+        bool valid_mosaic() const noexcept {
+            if ((m_nv_display_id == 0) || (m_nv_display_handle == nullptr)) {
+                return false;
+            }
 
-    //------------------------------------------------------------------------------
-    // NVAPI based GPU query
-    //------------------------------------------------------------------------------
+            if ((m_nv_num_physical_gpus < 1) || (m_nv_mosaic_num_displays < 2)) {
+                return false;
+            }
 
-    int nvapi()
+            return true;
+        }
+
+    public:
+
+        const std::string& name() const noexcept { return m_name; }
+        const rect_t& virtual_screen_rect() const noexcept { return m_virtual_screen_rect; }
+
+        NvU32 nv_display_id() const noexcept { return m_nv_display_id; }
+        NvDisplayHandle nv_display_handle() const noexcept { return m_nv_display_handle; }
+        size_t nv_num_physical_gpus() const noexcept { return m_nv_num_physical_gpus; }
+
+        void set_nv_display(NvU32 nv_display_id, NvDisplayHandle nv_display_handle, size_t nv_num_physical_gpus) {
+            m_nv_display_id = nv_display_id;
+            m_nv_display_handle = nv_display_handle;
+            m_nv_num_physical_gpus = nv_num_physical_gpus;
+        }
+
+        size_t nv_mosaic_num_displays() const noexcept { return m_nv_mosaic_num_displays; }
+        void set_nv_mosaic_num_displays(size_t nv_mosaic_num_displays) { m_nv_mosaic_num_displays = nv_mosaic_num_displays; }
+
+    private:
+
+        const std::string       m_name;
+        const rect_t            m_virtual_screen_rect;
+
+        NvU32                   m_nv_display_id = 0;
+        NvDisplayHandle         m_nv_display_handle = nullptr;
+        size_t                  m_nv_num_physical_gpus = 0;
+
+        size_t                  m_nv_mosaic_num_displays = 0;
+    };
+
+    class DisplayConfiguration
     {
-        std::cout << "[NVAPI]" << std::endl;
+    public:
 
-        //------------------------------------------------------------------------------
-        // Initialize NVAPI.
-        if (NvAPI_Initialize() != NVAPI_OK) {
-            std::cerr << "Error: Failed to initialize NVAPI!" << std::endl;
-            return EXIT_FAILURE;
-        }
+        DisplayConfiguration()
+        {
+            //------------------------------------------------------------------------------
+            // Get a list of physical displays (monitors) from Windows.
+            //------------------------------------------------------------------------------
 
-        //------------------------------------------------------------------------------
-        // Print interface version string.
-        NvAPI_ShortString interface_version = {};
+            //------------------------------------------------------------------------------
+            // Get the Virtual Screen geometry.
+            const rect_t virtual_screen(GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+            const size_t num_virtual_screen_monitors = GetSystemMetrics(SM_CMONITORS);
 
-        if (NvAPI_GetInterfaceVersionString(interface_version) == NVAPI_OK) {
-            std::cout << std::endl;
-            std::cout << "NVAPI interface version: " << interface_version << std::endl;
-        }
+            std::cout << "Virtual Screen origin: " << virtual_screen.m_x << " / " << virtual_screen.m_y << std::endl;
+            std::cout << "Virtual Screen size: " << virtual_screen.m_width << " x " << virtual_screen.m_height << std::endl;
+            std::cout << "Virtual Screen spans " << num_virtual_screen_monitors << " monitor(s)" << std::endl;
 
-        //------------------------------------------------------------------------------
-        // Get brief of current mosaic topology.
-        NV_MOSAIC_TOPO_BRIEF mosaic_topology = {};
-        mosaic_topology.version = NVAPI_MOSAIC_TOPO_BRIEF_VER;
+            //------------------------------------------------------------------------------
+            // Enumerate physical displays, each represented by a HMONITOR handle. 
+            if (EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC display_context, LPRECT virtual_screen_rect_, LPARAM user_data) {
+                DisplayConfiguration* const this_ = reinterpret_cast<DisplayConfiguration*>(user_data);
 
-        NV_MOSAIC_DISPLAY_SETTING mosaic_display_settings = {};
-        mosaic_display_settings.version = NVAPI_MOSAIC_DISPLAY_SETTING_VER;
+                //------------------------------------------------------------------------------
+                // Evaluate virtual screen rectangle.
+                rect_t virtual_screen_rect = {};
+                {
+                    virtual_screen_rect.m_x = virtual_screen_rect_->left;
+                    virtual_screen_rect.m_y = virtual_screen_rect_->top;
+                    virtual_screen_rect.m_width = (virtual_screen_rect_->right - virtual_screen_rect_->left);
+                    virtual_screen_rect.m_height = (virtual_screen_rect_->bottom - virtual_screen_rect_->top);
+                }
 
-        NvS32 mosaic_overlap_x = 0;
-        NvS32 mosaic_overlap_y = 0;
+                //------------------------------------------------------------------------------
+                // Get additional monitor info.
+                MONITORINFOEX monitor_info = {};
+                monitor_info.cbSize = sizeof(monitor_info);
 
-        if (NvAPI_Mosaic_GetCurrentTopo(&mosaic_topology, &mosaic_display_settings, &mosaic_overlap_x, &mosaic_overlap_y) != NVAPI_OK) {
-            std::cerr << "Error: Failed to get mosaic topology!" << std::endl;
-            return EXIT_FAILURE;
-        }
+                bool is_primary = false;
 
-        //------------------------------------------------------------------------------
-        // If a topology is enabled show which one.
-        std::cout << std::endl;
+                if (GetMonitorInfo(monitor, &monitor_info) != 0) {
+                    this_->m_displays.emplace_back(new Display(monitor_info.szDevice, virtual_screen_rect));
 
-        if (mosaic_topology.enabled) {
+                    std::cout << "Monitor " << monitor_info.szDevice << ": ";
+                    is_primary = ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) == MONITORINFOF_PRIMARY);
+                }
+                else {
+                    std::cout << "Monitor 0x" << monitor << ": ";
+                }
+
+                std::cout << "(" << virtual_screen_rect.m_x << " / " << virtual_screen_rect.m_y << ") [" << virtual_screen_rect.m_width << " x " << virtual_screen_rect.m_height << "]";
+
+                if (is_primary) {
+                    std::cout << " (primary)";
+                }
+
+                std::cout << std::endl;
+
+                //------------------------------------------------------------------------------
+                // ...
+                return TRUE;
+            }, LPARAM(this)) == 0)
+            {
+                throw std::runtime_error("Failed to enumerate monitors!");
+            }
+
+            //------------------------------------------------------------------------------
+            // Get Mosaic information for displays.
+            //------------------------------------------------------------------------------
+
+            //------------------------------------------------------------------------------
+            // Enumerate displays and note NVIDIA display IDs which are required below.
+            NvDisplayHandle display_handle = nullptr;
+            NvU32 display_index = 0;
+
+            while (NvAPI_EnumNvidiaDisplayHandle(display_index, &display_handle) == NVAPI_OK) {
+                NvAPI_ShortString display_name = {};
+
+                if (NvAPI_GetAssociatedNvidiaDisplayName(display_handle, display_name) == NVAPI_OK) {
+                    const auto it = std::find_if(begin(m_displays), end(m_displays), [display_name](const std::shared_ptr<Display>& display) {
+                        return (display->name() == display_name);
+                    });
+
+                    if (it == end(m_displays)) {
+                        std::cout << "NVAPI enunmerates display " << display_name << " but Windows does not!" << std::endl;
+                    }
+                    else {
+                        NvU32 display_id = 0;
+
+                        if (NvAPI_DISP_GetDisplayIdByDisplayName(display_name, &display_id) == NVAPI_OK) {                            
+                            NvPhysicalGpuHandle physical_gpus[NVAPI_MAX_PHYSICAL_GPUS] = {};
+                            NvU32 num_physical_gpus = 0;
+
+                            if (NvAPI_GetPhysicalGPUsFromDisplay(display_handle, physical_gpus, &num_physical_gpus) != NVAPI_OK) {
+                                throw std::runtime_error("Failed to get physical GPU count!");
+                            }
+
+                            (*it)->set_nv_display(display_id, display_handle, num_physical_gpus);
+                        }
+                    }
+                }
+
+                ++display_index;
+            }
+
+            //------------------------------------------------------------------------------
+            // Get brief of current mosaic topology.
+            NV_MOSAIC_TOPO_BRIEF mosaic_topology = {};
+            mosaic_topology.version = NVAPI_MOSAIC_TOPO_BRIEF_VER;
+
+            NV_MOSAIC_DISPLAY_SETTING mosaic_display_settings = {};
+            mosaic_display_settings.version = NVAPI_MOSAIC_DISPLAY_SETTING_VER;
+
+            NvS32 mosaic_overlap_x = 0;
+            NvS32 mosaic_overlap_y = 0;
+
+            if (NvAPI_Mosaic_GetCurrentTopo(&mosaic_topology, &mosaic_display_settings, &mosaic_overlap_x, &mosaic_overlap_y) != NVAPI_OK) {
+                throw std::runtime_error("Failed to get mosaic topology!");
+            }
+
+            //------------------------------------------------------------------------------
+            // If a topology is enabled show which one.
+            if (!mosaic_topology.enabled) {
+                if (mosaic_topology.isPossible) {
+                    throw std::runtime_error("Mosaic is DISABLED (but possible)!");
+                }
+                else {
+                    throw std::runtime_error("Mosaic is DISABLED!");
+                }
+            }
+
             std::cout << "Mosaic is ENABLED: ";
 
             switch (mosaic_topology.topo) {
@@ -622,21 +662,15 @@ namespace {
             default: std::cout << "unknown topology"; break;
             }
 
-            std::cout << std::endl;
-        }
-        else if (mosaic_topology.isPossible) {
-            std::cout << "Mosaic is DISABLED but supported" << std::endl;
-        }
+            std::cout << ", overlap (" << mosaic_overlap_x << ", " << mosaic_overlap_y << ")" << std::endl;
 
-        //------------------------------------------------------------------------------
-        // Show current display grid (mosaic) configuration, including where mosaic is
-        // disabled and each display is a 1x1 grid.
-        if (mosaic_topology.isPossible) {
+            //------------------------------------------------------------------------------
+            // Show current display grid (mosaic) configuration, including where mosaic is
+            // disabled and each display is a 1x1 grid.
             NvU32 num_grids = 0;
 
             if (NvAPI_Mosaic_EnumDisplayGrids(nullptr, &num_grids) != NVAPI_OK) {
-                std::cerr << "Error: Failed to enumerate display grids!" << std::endl;
-                return EXIT_FAILURE;
+                throw std::runtime_error("Failed to enumerate display grids!");
             }
 
             std::vector<NV_MOSAIC_GRID_TOPO> display_grids(num_grids);
@@ -646,784 +680,384 @@ namespace {
             });
 
             if (NvAPI_Mosaic_EnumDisplayGrids(display_grids.data(), &num_grids) != NVAPI_OK) {
-                std::cerr << "Error: Failed to enumerate display grids!" << std::endl;
-                return EXIT_FAILURE;
+                throw std::runtime_error("Failed to enumerate display grids!");
             }
-
-            assert(display_grids.size() >= num_grids);  // In some cases the initially reported number appears to be conservative!
-            display_grids.resize(num_grids);
-
-            std::for_each(begin(display_grids), end(display_grids), [](NV_MOSAIC_GRID_TOPO& display_grid) {
-                print_to_stream(std::cout, display_grid, "  ");
-            });
-        }
-
-        //------------------------------------------------------------------------------
-        // Enumerate logical GPUs and the physical GPUs underneath it.
-        NvLogicalGpuHandle logical_gpus[NVAPI_MAX_LOGICAL_GPUS] = {};
-        NvU32 num_logical_gpus = 0;
-
-        if (NvAPI_EnumLogicalGPUs(logical_gpus, &num_logical_gpus) != NVAPI_OK) {
-            std::cerr << "Error: Failed to enumerate logical GPUs!" << std::endl;
-            return EXIT_FAILURE;
-        }
-
-        NvPhysicalGpuHandle physical_gpus[NVAPI_MAX_PHYSICAL_GPUS] = { 0 };
-        NvU32 num_physical_gpus = 0;
-        NvU32 total_num_physical_gpus = 0;
-
-        for (NvU32 logical_gpu_index = 0; logical_gpu_index < num_logical_gpus; ++logical_gpu_index) {
-            std::cout << "Logical GPU " << logical_gpu_index << std::endl;
-
-            if (NvAPI_GetPhysicalGPUsFromLogicalGPU(logical_gpus[logical_gpu_index], physical_gpus, &num_physical_gpus) != NVAPI_OK) {
-                std::cerr << "Error: Failed to enumerate physical GPUs!" << std::endl;
-                continue;
-            }
-
-            total_num_physical_gpus += num_physical_gpus;
-
-            for (size_t physical_gpu_index = 0; physical_gpu_index < num_physical_gpus; ++physical_gpu_index) {
-                NvAPI_ShortString name = {};
-
-                if (NvAPI_GPU_GetFullName(physical_gpus[physical_gpu_index], name) != NVAPI_OK) {
-                    std::cerr << "Error: Failed to get GPU name!" << std::endl;
-                    continue;
-                }
-
-                std::cout << "  Physical GPU " << physical_gpu_index << ": " << name << std::endl;
-
-                NvU32 num_displays = 0;
-
-                if (NvAPI_GPU_GetAllDisplayIds(physical_gpus[physical_gpu_index], nullptr, &num_displays) != NVAPI_OK) {
-                    std::cerr << "Error: Failed to get conencted displays!" << std::endl;
-                    continue;
-                }
-
-                std::vector<NV_GPU_DISPLAYIDS> displays(num_displays);
-
-                std::for_each(begin(displays), end(displays), [](NV_GPU_DISPLAYIDS& display) {
-                    display.version = NV_GPU_DISPLAYIDS_VER;
-                });
-
-                if (NvAPI_GPU_GetAllDisplayIds(physical_gpus[physical_gpu_index], displays.data(), &num_displays) != NVAPI_OK) {
-                    std::cerr << "Error: Failed to get conencted displays!" << std::endl;
-                    continue;
-                }
-
-                assert(displays.size() >= num_displays);    // In some cases the initially reported number appears to be conservative!
-                displays.resize(num_displays);
-
-                for (size_t display_index = 0; display_index < displays.size(); ++display_index) {
-                    std::cout << "    Display " << display_index << ": ";
-
-                    switch (displays[display_index].connectorType) {
-                    case NV_MONITOR_CONN_TYPE_VGA: std::cout << "VGA"; break;
-                    case NV_MONITOR_CONN_TYPE_COMPONENT: std::cout << "Component"; break;
-                    case NV_MONITOR_CONN_TYPE_SVIDEO: std::cout << "S-Video"; break;
-                    case NV_MONITOR_CONN_TYPE_HDMI: std::cout << "HDMI"; break;
-                    case NV_MONITOR_CONN_TYPE_DVI: std::cout << "DVI"; break;
-                    case NV_MONITOR_CONN_TYPE_LVDS: std::cout << "LVDS"; break;
-                    case NV_MONITOR_CONN_TYPE_DP: std::cout << "DP"; break;
-                    case NV_MONITOR_CONN_TYPE_COMPOSITE: std::cout << "Composite"; break;
-                    default: std::cout << "Unknown"; break;
-                    }
-
-                    std::cout << ", 0x" << std::hex << std::setfill('0') << std::setw(8) << displays[display_index].displayId << std::dec;
-
-                    if (displays[display_index].isDynamic) {
-                        std::cout << ", dynamic";
-                    }
-
-                    if (displays[display_index].isActive) {
-                        std::cout << ", active";
-                    }
-
-                    if (displays[display_index].isCluster) {
-                        std::cout << ", cluster";
-                    }
-
-                    if (displays[display_index].isOSVisible) {
-                        std::cout << ", OS visible";
-                    }
-
-                    if (displays[display_index].isWFD) {
-                        std::cout << ", wireless";
-                    }
-
-                    if (displays[display_index].isConnected) {
-                        if (displays[display_index].isPhysicallyConnected) {
-                            std::cout << ", physically connected";
-                        }
-                        else {
-                            std::cout << ", connected";
-                        }
-                    }
-
-                    std::cout << std::endl;
-                }
-            }
-        }
-
-        if (NvAPI_EnumPhysicalGPUs(physical_gpus, &num_physical_gpus) != NVAPI_OK) {
-            std::cerr << "Error: Failed to enumerate physical GPUs!" << std::endl;
-            return EXIT_FAILURE;
-        }
-
-        assert(num_physical_gpus == total_num_physical_gpus);
-
-        //------------------------------------------------------------------------------
-        // ...
-        return EXIT_SUCCESS;
-    }
-
-    //------------------------------------------------------------------------------
-    // DirectX based GPU query
-    //------------------------------------------------------------------------------
-
-    int directx()
-    {
-        std::cout << "[DirectX]" << std::endl;
-
-        //------------------------------------------------------------------------------
-        // Grab DirectX factory.
-        ComPtr<IDXGIFactory4> factory;
-
-        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
-            std::cerr << "Error: Failed to create DXGI factory!" << std::endl;
-            return EXIT_FAILURE;
-        }
-
-        //------------------------------------------------------------------------------
-        // Enumerate DirectX adapters (GPUs).
-        std::cout << std::endl;
-
-        UINT adapter_index = 0;
-        IDXGIAdapter* adapter = nullptr;
-
-        while (factory->EnumAdapters(adapter_index, &adapter) != DXGI_ERROR_NOT_FOUND) {
-            DXGI_ADAPTER_DESC adapter_desc = {};
-
-            if (FAILED(adapter->GetDesc(&adapter_desc))) {
-                std::cerr << "Error: Failed to get adapter description!" << std::endl;
-                continue;
-            }
-
-            std::cout << "Adapter " << adapter_index << ": ";
-            std::wcout << adapter_desc.Description;
-            std::cout << ", 0x" << std::hex << adapter_desc.AdapterLuid.HighPart << std::setfill('0') << std::setw(8) << adapter_desc.AdapterLuid.LowPart << std::dec;
-            std::cout << std::endl;
-
-            UINT output_index = 0;
-            IDXGIOutput* output = nullptr;
 
             //------------------------------------------------------------------------------
-            // Enumerate outputs (displays).
-            while (adapter->EnumOutputs(output_index, &output) != DXGI_ERROR_NOT_FOUND) {
-                DXGI_OUTPUT_DESC output_desc = {};
+            // In some cases the initially reported number appears to be conservative so
+            // we trim the vector down to the actual size in case.
+            assert(display_grids.size() >= num_grids);
+            display_grids.resize(num_grids);
 
-                if (FAILED(output->GetDesc(&output_desc))) {
-                    std::cerr << "Error: Failed to get output description!" << std::endl;
-                    continue;
+            //------------------------------------------------------------------------------
+            // Grab information relevant to our display configuration.
+            size_t display_grid_index = 0;
+
+            for (const NV_MOSAIC_GRID_TOPO& display_grid : display_grids) {
+                const NvU32 first_display_id = display_grid.displays[0].displayId;
+
+                const auto it = std::find_if(begin(m_displays), end(m_displays), [first_display_id](const std::shared_ptr<Display>& display) {
+                    return (display->nv_display_id() == first_display_id);
+                });
+
+                if (it == end(m_displays)) {
+                    std::cout << "NVAPI enunmerates display " << first_display_id << " but Windows does not!" << std::endl;
+                }
+                else {
+                    (*it)->set_nv_mosaic_num_displays(display_grid.displayCount);
                 }
 
-                std::cout << "  Output " << output_index << ": ";
-                std::wcout << output_desc.DeviceName;
-
-                bool first = true;
-
-                if (output_desc.AttachedToDesktop) {
-                    if (first) { std::cout << " ("; }
-                    else { std::cout << ", "; }
-                    std::cout << "display attached";
-                    first = false;
-                }
-
-                MONITORINFO monitor_info = {};
-                monitor_info.cbSize = sizeof(monitor_info);
-
-                if (GetMonitorInfo(output_desc.Monitor, &monitor_info)) {
-                    if (monitor_info.dwFlags & MONITORINFOF_PRIMARY) {
-                        if (first) { std::cout << " ("; }
-                        else { std::cout << ", "; }
-                        std::cout << "primary display";
-                        first = false;
-                    }
-                }
-
-                if (!first) { std::cout << ")"; }
-                std::cout << std::endl;
-
-                output->Release();
-                ++output_index;
+                //------------------------------------------------------------------------------
+                // Print display grid info to console.
+                std::cout << "Display Grid " << display_grid_index++ << std::endl;
+                print_to_stream(std::cout, display_grid, "  ");
             }
 
-            adapter->Release();
-            ++adapter_index;
+            //------------------------------------------------------------------------------
+            // Select displays.
+            size_t max_num_displays = 1;
+
+            for (const auto& display : m_displays) {
+                if (!m_control_display && display->valid_non_mosaic()) {
+                    m_control_display = display;
+                }
+                else if (display->valid_mosaic() && (display->nv_mosaic_num_displays() > max_num_displays)) {
+                    m_mosaic_display = display;
+                    max_num_displays = display->nv_mosaic_num_displays();
+                }
+                else {
+                    throw std::runtime_error("Invalid display!");
+                }
+            }
+
+            if (!m_control_display) {
+                throw std::runtime_error("No valid control display available!");
+            }
+
+            if (!m_mosaic_display) {
+                throw std::runtime_error("No valid mosaic display available!");
+            }
         }
 
-        return EXIT_SUCCESS;
+     public:
+
+         std::shared_ptr<Display> control_display() const { return m_control_display; }
+         std::shared_ptr<Display> mosaic_display() const { return m_mosaic_display; }
+
+    private:
+
+        std::vector<std::shared_ptr<Display>>       m_displays;
+
+        std::shared_ptr<Display>                    m_control_display;
+        std::shared_ptr<Display>                    m_mosaic_display;
+    };
+
+} // unnamed namespace
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void
+control_window_key_callback(GLFWwindow* const window, int key, int scancode, int action, int mods)
+{
+    if (action == GLFW_PRESS) {
+        switch (key) {
+        case GLFW_KEY_ESCAPE:
+            break;
+
+        case GLFW_KEY_SPACE:
+            break;
+
+        default:
+            break;
+        }
+    }
+}
+
+GLFWwindow*
+create_control_window(std::shared_ptr<Display> control_display)
+{
+    //------------------------------------------------------------------------------
+    // Set shared GLFW window hints.
+    glfwDefaultWindowHints();
+
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, GL_CONTEXT_VERSION_MAJOR);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, GL_CONTEXT_VERSION_MINOR);
+    glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_OPENGL_DEBUG_CONTEXT);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);   // So we can move it in place BEFORE showing it.
+
+    //------------------------------------------------------------------------------
+    // Create main GLFW window.
+    GLFWwindow* const control_window = glfwCreateWindow((control_display->virtual_screen_rect().m_width - 200), (control_display->virtual_screen_rect().m_height - 200), "VMI Player", NULL, NULL);
+
+    if (!control_window) {
+        throw std::runtime_error("Failed to create main window!");
+    }
+
+    glfwSetKeyCallback(control_window, &control_window_key_callback);
+    glfwSetWindowPos(control_window, (control_display->virtual_screen_rect().m_x + 100), (control_display->virtual_screen_rect().m_y + 100));
+    glfwShowWindow(control_window);
+
+    //------------------------------------------------------------------------------
+    // Make the control display contexts current so we can initialize OpenGL (GLEW).
+    glfwMakeContextCurrent(control_window);
+
+    std::cout << "OpenGL vendor: " << glGetString(GL_VENDOR) << std::endl;
+    std::cout << "OpenGL renderer: " << glGetString(GL_RENDERER) << std::endl;
+    std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
+
+    const GLenum glew_result = glewInit();
+
+    if (glew_result != GLEW_OK) {
+        std::string e = "Failed to initialize GLEW: ";
+        e.append(reinterpret_cast<const char*>(glewGetErrorString(glew_result)));
+
+        throw std::runtime_error(e);
     }
 
     //------------------------------------------------------------------------------
-    // OpenGL based GPU query
+    // ...
+    return control_window;
+}
+
+HWND
+create_mosaic_window(std::shared_ptr<Display> mosaic_display)
+{
     //------------------------------------------------------------------------------
-
-    int opengl()
+    // Register a window class.
+    WNDCLASSA wc = {};
     {
-        std::cout << "[OpenGL]" << std::endl;
+        wc.style = CS_OWNDC;
+        wc.lpfnWndProc = window_callback;
+        wc.cbClsExtra = 0;
+        wc.cbWndExtra = 0;
+        wc.hInstance = NULL;
+        wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = NULL;
+        wc.lpszMenuName = NULL;
+        wc.lpszClassName = "VMI Player";
+    }
+
+    RegisterClassA(&wc);
+
+    //------------------------------------------------------------------------------
+    // "An OpenGL window should be created with the WS_CLIPCHILDREN and
+    // WS_CLIPSIBLINGS styles. Additionally, the window class attribute should NOT
+    // include the CS_PARENTDC style." [SetPixelFormat documentation]
+    const DWORD style = (WS_OVERLAPPED | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+
+    PIXELFORMATDESCRIPTOR pixel_format_desc = {};
+    {
+        pixel_format_desc.nSize = sizeof(pixel_format_desc);
+        pixel_format_desc.nVersion = 1;
 
         //------------------------------------------------------------------------------
-        // Check prerequisites.
-        if (virtual_screen_monitors.empty()) {
-            std::cerr << "Error: No monitors are listed for the virtual screen!" << std::endl;
-            return EXIT_FAILURE;
-        }
+        // "PFD_DEPTH_DONTCARE: To select a pixel format without a depth buffer, you
+        // must specify this flag. The requested pixel format can be with or without a
+        // depth buffer. Otherwise, only pixel formats with a depth buffer are
+        // considered." [PIXELFORMATDESCRIPTOR documentation]
+        pixel_format_desc.dwFlags = (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER | PFD_DEPTH_DONTCARE);
 
         //------------------------------------------------------------------------------
-        // Initialize CUDA if available;
-        if (cuInit(0) == CUDA_SUCCESS) {
-            std::cout << std::endl << "CUDA available" << std::endl;
-        }
+        // "For RGBA pixel types, it is the size of the color buffer, excluding the
+        // alpha bitplanes." [PIXELFORMATDESCRIPTOR documentation]
+        pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
+        pixel_format_desc.cColorBits = 24;
+    };
 
-        //------------------------------------------------------------------------------
-        // Register a window class.
-        WNDCLASSA wc = {};
-        {
-            wc.style = CS_OWNDC;
-            wc.lpfnWndProc = window_callback;
-            wc.cbClsExtra = 0;
-            wc.cbWndExtra = 0;
-            wc.hInstance = NULL;
-            wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-            wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-            wc.hbrBackground = NULL;
-            wc.lpszMenuName = NULL;
-            wc.lpszClassName = "TestMultiGpuMultiMonitor";
-        }
+    //------------------------------------------------------------------------------
+    // Create a 'full screen' window.
+    RECT window_rect = {};
+    {
+        SetRect(&window_rect,
+            mosaic_display->virtual_screen_rect().m_x,
+            mosaic_display->virtual_screen_rect().m_y,
+            (mosaic_display->virtual_screen_rect().m_x + mosaic_display->virtual_screen_rect().m_width),
+            (mosaic_display->virtual_screen_rect().m_y + mosaic_display->virtual_screen_rect().m_height));
 
-        RegisterClassA(&wc);
+        AdjustWindowRect(&window_rect, style, FALSE);
+    }
 
-        //------------------------------------------------------------------------------
-        // Create one 'full screen' window per each monitor in the virtual screen.
-        //------------------------------------------------------------------------------
+    const HWND window = CreateWindowA(wc.lpszClassName, "Mosaic Window",
+        style, window_rect.left, window_rect.top, (window_rect.right - window_rect.left), (window_rect.bottom - window_rect.top),
+        nullptr, nullptr, nullptr, nullptr);
 
-        //------------------------------------------------------------------------------
-        // "An OpenGL window should be created with the WS_CLIPCHILDREN and
-        // WS_CLIPSIBLINGS styles. Additionally, the window class attribute should NOT
-        // include the CS_PARENTDC style." [SetPixelFormat documentation]
-        const DWORD style = (WS_OVERLAPPED | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+    if (window == NULL) {
+        throw std::runtime_error("Failed to create window!");
+    }
 
+    ShowWindow(window, SW_SHOWDEFAULT);
+    UpdateWindow(window);
+
+    //------------------------------------------------------------------------------
+    // Setup the display context.
+    const HDC display_context = GetDC(window);
+
+    const int pixel_format = ChoosePixelFormat(display_context, &pixel_format_desc);
+
+    if (pixel_format == 0) {
+        throw std::runtime_error("Failed to choose pixel format!");
+    }
+
+    if (SetPixelFormat(display_context, pixel_format, &pixel_format_desc) != TRUE) {
+        throw std::runtime_error(" Failed to set pixel format!");
+    }
+
+    ReleaseDC(window, display_context);
+
+    //------------------------------------------------------------------------------
+    // ...
+    return window;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+HGLRC
+create_opengl_affinity_context(HDC& affinity_display_context, HGPUNV gpu, const PIXELFORMATDESCRIPTOR& pixel_format_desc)
+{
+    //------------------------------------------------------------------------------
+    // Create and setup affinity display context.
+    const HGPUNV gpu_list[2] = { gpu, nullptr };
+    
+    affinity_display_context = wglCreateAffinityDCNV(gpu_list);
+
+    if (affinity_display_context == nullptr) {
+        throw std::runtime_error("Failed to create affinity display context!");
+    }
+
+    const int pixel_format = ChoosePixelFormat(affinity_display_context, &pixel_format_desc);
+
+    if (pixel_format == 0) {
+        wglDeleteDCNV(affinity_display_context);
+        throw std::runtime_error("Failed to choose pixel format!");
+    }
+
+    if (SetPixelFormat(affinity_display_context, pixel_format, &pixel_format_desc) != TRUE) {
+        wglDeleteDCNV(affinity_display_context);
+        throw std::runtime_error("Failed to set pixel format!");
+    }
+
+    if ((0)) {
         PIXELFORMATDESCRIPTOR pixel_format_desc = {};
         {
             pixel_format_desc.nSize = sizeof(pixel_format_desc);
             pixel_format_desc.nVersion = 1;
-
-            //------------------------------------------------------------------------------
-            // "PFD_DEPTH_DONTCARE: To select a pixel format without a depth buffer, you
-            // must specify this flag. The requested pixel format can be with or without a
-            // depth buffer. Otherwise, only pixel formats with a depth buffer are
-            // considered." [PIXELFORMATDESCRIPTOR documentation]
-            pixel_format_desc.dwFlags = (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER | PFD_DEPTH_DONTCARE);
-
-            //------------------------------------------------------------------------------
-            // "For RGBA pixel types, it is the size of the color buffer, excluding the
-            // alpha bitplanes." [PIXELFORMATDESCRIPTOR documentation]
-            pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
-            pixel_format_desc.cColorBits = 24;
         };
 
-        std::vector<HWND> windows;
-        std::vector<HDC> display_contexts;
-        std::vector<HGLRC> gl_contexts;
-
-        for (size_t virtual_screen_monitor_index = 0; virtual_screen_monitor_index < virtual_screen_monitors.size(); ++virtual_screen_monitor_index) {
-            //------------------------------------------------------------------------------
-            // Create a 'full screen' window.
-            RECT window_rect = {};
-            {
-                SetRect(&window_rect,
-                    virtual_screen_monitors[virtual_screen_monitor_index].m_x,
-                    virtual_screen_monitors[virtual_screen_monitor_index].m_y,
-                    (virtual_screen_monitors[virtual_screen_monitor_index].m_x + virtual_screen_monitors[virtual_screen_monitor_index].m_width),
-                    (virtual_screen_monitors[virtual_screen_monitor_index].m_y + virtual_screen_monitors[virtual_screen_monitor_index].m_height));
-
-                AdjustWindowRect(&window_rect, style, FALSE);
-            }
-
-            const HWND window = CreateWindowA(wc.lpszClassName, "TestMultiGpuMultiMonitor",
-                style, window_rect.left, window_rect.top, (window_rect.right - window_rect.left), (window_rect.bottom - window_rect.top),
-                nullptr, nullptr, nullptr, nullptr);
-
-            ShowWindow(window, SW_SHOWDEFAULT);
-            UpdateWindow(window);
-
-            //------------------------------------------------------------------------------
-            // Setup the display context.
-            const HDC display_context = GetDC(window);
-            size_t num_monitors = 0;
-
-            if (EnumDisplayMonitors(display_context, nullptr, [](HMONITOR monitor, HDC display_context, LPRECT virtual_screen_rect, LPARAM user_data) {
-                size_t* const num_monitors_ptr = (size_t*)user_data;
-                (*num_monitors_ptr) += 1;
-                return TRUE;
-            }, (LPARAM)&num_monitors) == 0)
-            {
-                std::cerr << "Error: Failed to enumerate monitors for display context!" << std::endl;
-                return EXIT_FAILURE;
-            }
-
-            if (num_monitors != 1) {
-                std::cerr << "Error: Display context intersects more than one monitor!" << std::endl;
-                return EXIT_FAILURE;
-            }
-
-            const int pixel_format = ChoosePixelFormat(display_context, &pixel_format_desc);
-
-            if (pixel_format == 0) {
-                std::cerr << "Error: Failed to choose pixel format!" << std::endl;
-                return EXIT_FAILURE;
-            }
-
-            if (SetPixelFormat(display_context, pixel_format, &pixel_format_desc) != TRUE) {
-                std::cerr << "Error: Failed to set pixel format!" << std::endl;
-                return EXIT_FAILURE;
-            }
-
-            //------------------------------------------------------------------------------
-            // Ccreate OpenGL context and share lists between all the contexts.
-            const HGLRC gl_context = wglCreateContext(display_context);
-
-            if (gl_context == NULL) {
-                std::cerr << "Error: Failed to create OpenGL context!" << std::endl;
-                return EXIT_FAILURE;
-            }
-
-            if (gl_contexts.size() > 0) {
-                wglShareLists(gl_contexts[0], gl_context);
-            }
-
-            //------------------------------------------------------------------------------
-            // Add to list.
-            windows.push_back(window);
-            display_contexts.push_back(display_context);
-            gl_contexts.push_back(gl_context);
+        if (DescribePixelFormat(affinity_display_context, pixel_format, pixel_format_desc.nSize, &pixel_format_desc) == 0) {
+            wglDeleteDCNV(affinity_display_context);
+            throw std::runtime_error("Failed to describe pixel format!");
         }
-
-        assert(windows.size() == virtual_screen_monitors.size());
-        assert(display_contexts.size() == virtual_screen_monitors.size());
-        assert(gl_contexts.size() == virtual_screen_monitors.size());
-
-        //------------------------------------------------------------------------------
-        // Make one of the contexts current so we can initialize OpenGL (via GLEW).
-        std::cout << std::endl;
-
-        if (wglMakeCurrent(display_contexts[0], gl_contexts[0]) != TRUE) {
-            std::cerr << "Error: Failed to make OpenGL context current: ";
-            log_last_error_message();
-            return EXIT_FAILURE;
-        }
-
-        std::cout << "OpenGL vendor: " << glGetString(GL_VENDOR) << std::endl;
-        std::cout << "OpenGL renderer: " << glGetString(GL_RENDERER) << std::endl;
-        std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
-
-        const GLenum glew_result = glewInit();
-
-        if (glew_result != GLEW_OK) {
-            std::cerr << "Error: Failed to initialize GLEW: " << glewGetErrorString(glew_result) << std::endl;
-            return EXIT_FAILURE;
-        }
-
-#ifndef WGL_NV_gpu_affinity
-        wglEnumGpusNV = (wglEnumGpusNV_f)wglGetProcAddress("wglEnumGpusNV");
-        wglEnumGpuDevicesNV = (wglEnumGpuDevicesNV_f)wglGetProcAddress("wglEnumGpuDevicesNV");
-        wglCreateAffinityDCNV = (wglCreateAffinityDCNV_f)wglGetProcAddress("wglCreateAffinityDCNV");
-        wglEnumGpusFromAffinityDCNV = (wglEnumGpusFromAffinityDCNV_f)wglGetProcAddress("wglEnumGpusFromAffinityDCNV");
-        wglDeleteDCNV = (wglDeleteDCNV_f)wglGetProcAddress("wglDeleteDCNV");
-#endif // WGL_NV_gpu_affinity
-
-        //------------------------------------------------------------------------------
-        // Check associated CUDA device.
-        unsigned int cuda_device_count = 0;
-        std::array<CUdevice, 4> cuda_devices;
-
-        if (cuGLGetDevices(&cuda_device_count, cuda_devices.data(), unsigned int(cuda_devices.size()), CU_GL_DEVICE_LIST_ALL) == CUDA_SUCCESS) {
-            for (size_t i = 0; i < cuda_device_count; ++i) {
-                std::cout << "CUDA device: " << cuda_devices[i] << std::endl;
-            }
-        }
-
-        //------------------------------------------------------------------------------
-        // Enumerate GPUs.
-        std::cout << std::endl;
-
-        UINT gpu_index = 0;
-        HGPUNV gpu = nullptr;
-
-        std::vector<HGPUNV> gpus;
-
-        while (wglEnumGpusNV(gpu_index, &gpu)) {
-            std::cout << "GPU " << gpu_index << ":" << std::endl;
-            gpus.push_back(gpu);
-
-            //------------------------------------------------------------------------------
-            // Get associated CUDA device.
-            CUdevice cuda_device = -1;
-            
-            if (cuWGLGetDevice(&cuda_device, gpu) == CUDA_SUCCESS) {
-                std::cout << "  CUDA Device: " << cuda_device << std::endl;
-            }
-
-            //------------------------------------------------------------------------------
-            // Enumerate devices (displays).
-            UINT device_index = 0;
-
-            GPU_DEVICE gpu_device;
-            gpu_device.cb = sizeof(gpu_device);
-
-            while (wglEnumGpuDevicesNV(gpu, device_index, &gpu_device)) {
-                std::cout << "  Device " << device_index << ": ";
-                std::cout << gpu_device.DeviceString << ", " << gpu_device.DeviceName << ", ";
-                print_display_flags_to_stream(std::cout, gpu_device.Flags);
-                std::cout << std::endl;
-
-                ++device_index;
-            }
-
-            ++gpu_index;
-        }
-
-        if (wglMakeCurrent(nullptr, nullptr) != TRUE) {
-            std::cerr << "Error: Failed to release current OpenGL context: ";
-            log_last_error_message();
-            return EXIT_FAILURE;
-        }
-
-        //------------------------------------------------------------------------------
-        // Create one (affinity) display and OpenGL context per GPU.
-        std::vector<HDC> affinity_display_contexts;
-        std::vector<HGLRC> affinity_gl_contexts;
-
-        for (size_t gpu_index = 0; gpu_index < gpus.size(); ++gpu_index) {
-            HGPUNV gpu_list[2] = {};
-            gpu_list[0] = gpus[gpu_index];
-
-            //------------------------------------------------------------------------------
-            // Create and setup affinity display context.
-            const HDC display_context = wglCreateAffinityDCNV(gpu_list);
-
-            if (display_context == NULL) {
-                std::cerr << "Error: Failed to create affinity display context!" << std::endl;
-                return EXIT_FAILURE;
-            }
-
-            const int pixel_format = ChoosePixelFormat(display_context, &pixel_format_desc);
-
-            if (pixel_format == 0) {
-                std::cerr << "Error: Failed to choose pixel format!" << std::endl;
-                return EXIT_FAILURE;
-            }
-
-            if (SetPixelFormat(display_context, pixel_format, &pixel_format_desc) != TRUE) {
-                std::cerr << "Error: Failed to set pixel format!" << std::endl;
-                wglDeleteDCNV(display_context);
-                continue;
-            }
-
-            //------------------------------------------------------------------------------
-            // Ccreate OpenGL context and share lists between all the contexts.
-            const HGLRC gl_context = wglCreateContext(display_context);
-
-            if (gl_context == NULL) {
-                std::cerr << "Error: Failed to create OpenGL context!" << std::endl;
-                wglDeleteDCNV(display_context);
-                continue;
-            }
-
-            if (affinity_gl_contexts.size() > 0) {
-                wglShareLists(affinity_gl_contexts[0], gl_context);
-            }
-
-            //------------------------------------------------------------------------------
-            // Add to list.
-            affinity_display_contexts.push_back(display_context);
-            affinity_gl_contexts.push_back(gl_context);
-        }
-
-        //------------------------------------------------------------------------------
-        // Start rendering threads.
-        std::vector<GLuint> affinity_programs(affinity_display_contexts.size());
-        std::vector<GLuint> framebuffers(affinity_display_contexts.size());
-        std::vector<GLuint> color_attachments(affinity_display_contexts.size());
-
-        if ((0)) {
-            start_render_threads(affinity_display_contexts, affinity_gl_contexts,
-                [&framebuffers, &color_attachments, &affinity_programs](size_t thread_index)
-            {
-                if (wglSwapIntervalEXT(1) != TRUE) {
-                    std::cerr << "Error: Failed to set swap interval: ";
-                    log_last_error_message();
-                }
-
-                affinity_programs[thread_index] = RenderPoints::create_program();
-                create_texture_backed_render_targets(&framebuffers[thread_index], &color_attachments[thread_index], 1, 4096, 4096);
-            },
-                [framebuffers, color_attachments, &affinity_programs](size_t thread_index)
-            {
-                const auto start_time = std::chrono::steady_clock::now();
-                GLuint vao = 0;
-
-                //------------------------------------------------------------------------------
-                // Render frames.
-                for (size_t frame_index = 0; frame_index < (1024 * 16); ++frame_index) {
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffers[thread_index]);
-                    glClearColor(0.0, 0.0, 0.0, 1.0);
-                    glClear(GL_COLOR_BUFFER_BIT);
-
-                    //toolbox::OpenGLProgram::validate(programs[thread_index]);
-                    glUseProgram(affinity_programs[thread_index]);
-
-                    RenderPoints::set_rect(rect);
-                    RenderPoints::set_mvp(mvp);
-                    RenderPoints::draw(vao);
-
-                    glFlush();
-                }
-
-                glFinish();
-
-                const auto end_time = std::chrono::steady_clock::now();
-                const auto duration = (end_time - start_time);
-
-                std::cout << "Render thread completed in: " << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() << " ms" << std::endl;
-
-                delete_texture_backed_render_targets(&framebuffers[thread_index], &color_attachments[thread_index], 1);
-            });
-        }
-
-        std::vector<GLuint> programs(display_contexts.size());
-        size_t initial_start_time_offset = (1000000 * 2);
-        const auto start_time = std::chrono::steady_clock::now();
-
-        start_render_threads(display_contexts, gl_contexts,
-            [&programs](size_t thread_index)
-        {
-            if (wglSwapIntervalEXT(1) != TRUE) {
-                std::cerr << "Error: Failed to set swap interval: ";
-                log_last_error_message();
-            }
-
-            programs[thread_index] = RenderPoints::create_program();
-        },
-            [&display_contexts, &programs, &start_time, initial_start_time_offset](size_t thread_index)
-        {
-            constexpr bool LOG_TIMINGS_TO_CONSOLE = false;
-            constexpr bool LOG_TIMINGS_TO_FILE = true;
-
-            size_t start_time_offset = initial_start_time_offset;
-            GLuint vao = 0;
-
-            FILE *f = nullptr;
-
-            if (LOG_TIMINGS_TO_FILE) {
-                char path[] = "D:\\timings_?.tsv";
-                path[11] = ('0' + thread_index);
-                f = fopen(path, "w");
-            }
-
-            //------------------------------------------------------------------------------
-            // Wait till half a frame before the intended start time, let the wait in the
-            // loop handle the remainder to the first frame (if enabled).
-            std::this_thread::sleep_until(start_time + std::chrono::microseconds(start_time_offset - (1000000 / 120)));
-            auto prev_frame_start_time = std::chrono::steady_clock::now();
-
-            for (size_t frame_index = 0; frame_index < (5 * 60  * 60); ++frame_index) {
-                const auto frame_start_time = std::chrono::steady_clock::now();
-
-                if (LOG_TIMINGS_TO_CONSOLE || LOG_TIMINGS_TO_FILE) {
-                    const auto duration = (frame_start_time - prev_frame_start_time);
-                    prev_frame_start_time = frame_start_time;
-
-                    if (LOG_TIMINGS_TO_CONSOLE && (thread_index == 0)) {
-                        std::cout << "Frame: " << std::chrono::duration_cast<std::chrono::microseconds>(duration).count() << std::endl;
-                    }
-
-                    if (LOG_TIMINGS_TO_FILE && f && (frame_index > 60)) {
-                        fprintf(f, "%ji\t", intmax_t(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()));
-                    }
-                }
-
-                if ((0)) {
-                    //------------------------------------------------------------------------------
-                    // Start encoding in 1/60 second intervals.
-                    std::this_thread::sleep_until(start_time + std::chrono::microseconds(start_time_offset));
-                    start_time_offset += (1000000 / 60);
-                }
-                else if ((0)) {
-                    //------------------------------------------------------------------------------
-                    // Wait till we are clearly within the frame interval.
-                    if (wglDelayBeforeSwapNV(display_contexts[thread_index], GLfloat(1.0 / 80.0)) != TRUE) {
-                        //std::cout << GetLastError() << std::endl;
-                    }
-                }
-
-                const auto encode_start_time = std::chrono::steady_clock::now();
-
-                if (LOG_TIMINGS_TO_CONSOLE || LOG_TIMINGS_TO_FILE) {
-                    const auto duration = (encode_start_time - frame_start_time);
-
-                    if (LOG_TIMINGS_TO_CONSOLE && (thread_index == 0)) {
-                        std::cout << "Sync: " << std::chrono::duration_cast<std::chrono::microseconds>(duration).count() << std::endl;
-                    }
-
-                    if (LOG_TIMINGS_TO_FILE && f && (frame_index > 60)) {
-                        fprintf(f, "%ji\t", intmax_t(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()));
-                    }
-                }
-
-                //------------------------------------------------------------------------------
-                // Encode the frame.
-                if ((1)) {
-                    switch (frame_index % 8) {
-                    case 0:
-                        glEnable(GL_SCISSOR_TEST);
-                        glScissor(0, 256, 2048, 256);
-                        glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
-                        break;
-
-                    case 1:
-                        glEnable(GL_SCISSOR_TEST);
-                        glScissor(0, 512, 2048, 256);
-                        glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
-                        break;
-
-                    case 2:
-                        glEnable(GL_SCISSOR_TEST);
-                        glScissor(0, 768, 2048, 256);
-                        glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
-                        break;
-
-                    case 3:
-                        glEnable(GL_SCISSOR_TEST);
-                        glScissor(0, 64, 2048, 64);
-                        glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
-                        break;
-
-                    case 4:
-                        glEnable(GL_SCISSOR_TEST);
-                        glScissor(0, 128, 2048, 64);
-                        glClearColor(0.0f, 1.0f, 1.0f, 1.0f);
-                        break;
-
-                    case 5:
-                        glEnable(GL_SCISSOR_TEST);
-                        glScissor(0, 192, 2048, 64);
-                        glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
-                        break;
-
-                    default:
-                        glDisable(GL_SCISSOR_TEST);
-                        glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
-                        break;
-                    }
-
-                    glClear(GL_COLOR_BUFFER_BIT);
-                }
-
-                if ((0)) {
-                    toolbox::OpenGLProgram::validate(programs[thread_index]);
-                }
-
-                if ((0)) {
-                    glUseProgram(programs[thread_index]);
-
-                    RenderPoints::set_rect(rect);
-                    RenderPoints::set_mvp(mvp);
-                    RenderPoints::draw(vao);
-                }
-
-                //------------------------------------------------------------------------------
-                // Swap buffers.
-                const auto swap_buffers_start_time = std::chrono::steady_clock::now();
-
-                if (LOG_TIMINGS_TO_CONSOLE || LOG_TIMINGS_TO_FILE) {
-                    const auto duration = (swap_buffers_start_time - encode_start_time);
-
-                    if (LOG_TIMINGS_TO_CONSOLE && (thread_index == 0)) {
-                        std::cout << "Encode: " << std::chrono::duration_cast<std::chrono::microseconds>(duration).count() << std::endl;
-                    }
-
-                    if (LOG_TIMINGS_TO_FILE && f && (frame_index > 60)) {
-                        fprintf(f, "%ji\t", intmax_t(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()));
-                    }
-                }
-
-                SwapBuffers(display_contexts[thread_index]);
-
-                if (LOG_TIMINGS_TO_CONSOLE || LOG_TIMINGS_TO_FILE) {
-                    const auto now = std::chrono::steady_clock::now();
-                    const auto duration = (now - swap_buffers_start_time);
-
-                    if (LOG_TIMINGS_TO_CONSOLE) {
-                        std::cout << "Swap: " << std::chrono::duration_cast<std::chrono::microseconds>(duration).count() << std::endl;
-                    }
-
-                    if (LOG_TIMINGS_TO_FILE && f && (frame_index > 60)) {
-                        fprintf(f, "%ji\t", intmax_t(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()));
-                        fprintf(f, "%ji\n", intmax_t(std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count()));
-                    }
-                }
-            }
-
-            if (f) {
-                fclose(f);
-            }
-        });
-
-        //------------------------------------------------------------------------------
-        // Main loop driving application window.
-        MSG message = {};
-
-        while (try_join_render_threads(10) == false) {
-            //------------------------------------------------------------------------------
-            // Handle application window messages.
-            GetMessage(&message, nullptr, 0, 0);
-            TranslateMessage(&message);
-            DispatchMessage(&message);
-        }
-
-        //------------------------------------------------------------------------------
-        // Wait for all render threads to terminate.
-        join_render_threads();
-
-        //------------------------------------------------------------------------------
-        // Tidy.
-        std::for_each(begin(gl_contexts), end(gl_contexts), [](HGLRC gl_context) {
-            wglDeleteContext(gl_context);
-        });
-
-        std::for_each(begin(display_contexts), end(display_contexts), [](HDC display_context) {
-            wglDeleteDCNV(display_context);
-        });
-
-        std::for_each(begin(gl_contexts), end(gl_contexts), [](HGLRC gl_context) {
-            wglDeleteContext(gl_context);
-        });
-
-        for (size_t i = 0; i < virtual_screen_monitors.size(); ++i) {
-            if ((wc.style & CS_OWNDC) != CS_OWNDC) {
-                ReleaseDC(windows[i], display_contexts[i]);
-            }
-
-            DestroyWindow(windows[i]);
-        }
-
-        //------------------------------------------------------------------------------
-        // ...
-        return EXIT_SUCCESS;
     }
 
-} // unnamed namespace
+    //------------------------------------------------------------------------------
+    // Ccreate OpenGL affinity context.
+    const int attrib_list[] = {
+        //WGL_CONTEXT_MAJOR_VERSION_ARB, GL_CONTEXT_VERSION_MAJOR,
+        //WGL_CONTEXT_MINOR_VERSION_ARB, GL_CONTEXT_VERSION_MINOR,
+        WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_DEBUG_BIT_ARB,
+        0
+    };
+    
+    const HGLRC gl_context = wglCreateContextAttribsARB(affinity_display_context, nullptr, attrib_list);
+
+    if (gl_context == nullptr) {
+        wglDeleteDCNV(affinity_display_context);
+        throw std::runtime_error("Failed to create OpenGL context!");
+    }
+
+    //------------------------------------------------------------------------------
+    // ...
+    return gl_context;
+}
+
+HDC primary_dc = nullptr;
+HGLRC primary_gl_context = nullptr;
+
+HDC support_dc = nullptr;
+HGLRC support_gl_context = nullptr;
+
+void
+create_render_contexts(const DisplayConfiguration& display_configuration)
+{
+    //------------------------------------------------------------------------------
+    // Identify primary/support GPUs.
+    HGPUNV primary_gpu = nullptr;
+    HGPUNV support_gpu = nullptr;
+
+    UINT gpu_index = 0;
+    HGPUNV gpu = nullptr;
+
+    std::vector<HGPUNV> gpus;
+
+    while (wglEnumGpusNV(gpu_index, &gpu)) {
+        std::cout << "GPU " << gpu_index << ":" << std::endl;
+        gpus.push_back(gpu);
+
+        //------------------------------------------------------------------------------
+        // Enumerate devices (displays).
+        GPU_DEVICE gpu_device;
+        gpu_device.cb = sizeof(gpu_device);
+
+        for (UINT device_index = 0; wglEnumGpuDevicesNV(gpu, device_index, &gpu_device); ++device_index) {
+            if ((gpu_device.Flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) {
+                continue;
+            }
+
+            std::cout << "  Device " << device_index << ": ";
+            std::cout << gpu_device.DeviceString << ", " << gpu_device.DeviceName << ", ";
+            print_display_flags_to_stream(std::cout, gpu_device.Flags);
+            std::cout << std::endl;
+
+            if (display_configuration.mosaic_display()->name() == gpu_device.DeviceName) {
+                primary_gpu = gpu;
+            }
+            else if (!support_gpu) {
+                support_gpu = gpu;
+            }
+        }
+
+        ++gpu_index;
+    }
+
+    if (!primary_gpu && !support_gpu) {
+        throw std::runtime_error("Failed to identify primary or support GPU!");
+    }
+
+    //------------------------------------------------------------------------------
+    // No specific pixel format is required for an affinity (display) context as it
+    // does not have a default framebuffer. 
+    PIXELFORMATDESCRIPTOR pixel_format_desc = {};
+    {
+        pixel_format_desc.nSize = sizeof(pixel_format_desc);
+        pixel_format_desc.nVersion = 1;
+
+        //------------------------------------------------------------------------------
+        // "PFD_DEPTH_DONTCARE: To select a pixel format without a depth buffer, you
+        // must specify this flag. The requested pixel format can be with or without a
+        // depth buffer. Otherwise, only pixel formats with a depth buffer are
+        // considered." [PIXELFORMATDESCRIPTOR documentation]
+        pixel_format_desc.dwFlags = (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER | PFD_DEPTH_DONTCARE);
+
+        //------------------------------------------------------------------------------
+        // "For RGBA pixel types, it is the size of the color buffer, excluding the
+        // alpha bitplanes." [PIXELFORMATDESCRIPTOR documentation]
+        pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
+        pixel_format_desc.cColorBits = 24;
+    };
+
+    //------------------------------------------------------------------------------
+    // Create the OpenGL affinity contexts and share lists between them.
+    primary_gl_context = create_opengl_affinity_context(primary_dc, primary_gpu, pixel_format_desc);
+    support_gl_context = create_opengl_affinity_context(support_dc, support_gpu, pixel_format_desc);
+
+    if (wglShareLists(primary_gl_context, support_gl_context)) {
+        throw std::runtime_error("Failed to share OpenGL lists!");
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1431,13 +1065,94 @@ namespace {
 int
 main(int argc, char* argv[])
 {
-    windows();
-    std::cout << std::endl;
-    nvapi();
-    std::cout << std::endl;
-    directx();
-    std::cout << std::endl;
-    opengl();
+    //------------------------------------------------------------------------------
+    // Initialize NVAPI (and make sure NvAPI_Unload is called under exceptions).
+    if (NvAPI_Initialize() != NVAPI_OK) {
+        throw std::runtime_error("Failed to initialize NVAPI!");
+    }
+
+    std::shared_ptr<uint8_t> nvapi_unload(reinterpret_cast<uint8_t*>(0), [](uint8_t*) {
+        NvAPI_Unload();
+    });
+
+    //------------------------------------------------------------------------------
+    // Print interface version string.
+    NvAPI_ShortString interface_version = {};
+
+    if (NvAPI_GetInterfaceVersionString(interface_version) == NVAPI_OK) {
+        std::cout << "NVAPI interface version: " << interface_version << std::endl;
+    }
+
+    //------------------------------------------------------------------------------
+    // Initialize GLFW.
+    glfwSetErrorCallback(&glfw_error_callback);
+
+    int glfw_version_major = 0;
+    int glfw_version_minor = 0;
+    int glfw_version_rev = 0;
+
+    glfwGetVersion(&glfw_version_major, &glfw_version_minor, &glfw_version_rev);
+    std::cout << "GLFW: " << glfwGetVersionString() << std::endl;
+
+    if ((glfw_version_major < 3) || ((glfw_version_major == 3) && (glfw_version_minor < 2))) {
+        std::cerr << "Error: GLFW 3.2 or newer exepcted!" << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    if (glfwInit() == GLFW_FALSE) {
+        std::cerr << "Error: Failed to initialize GLFW!" << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    //------------------------------------------------------------------------------
+    // Get display configuration.
+    try {
+        DisplayConfiguration display_configuration;
+        
+        GLFWwindow* const control_window = create_control_window(display_configuration.control_display());
+        const HWND mosaic_window = create_mosaic_window(display_configuration.mosaic_display());
+        create_render_contexts(display_configuration);
+
+        MSG message = {};
+        float time = 0.0;
+
+        while (!glfwWindowShouldClose(control_window)) {
+            if ((0)) {
+                wglMakeCurrent(support_dc, support_gl_context);
+                wglMakeCurrent(primary_dc, primary_gl_context);
+            }
+
+            if ((1)) {
+                const HDC mosaic_dc = GetDC(mosaic_window);
+
+                if (wglMakeCurrent(mosaic_dc, primary_gl_context)) {
+                    glClearColor(0.25, 0.5, time, 1.0);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    SwapBuffers(mosaic_dc);
+                }
+
+                ReleaseDC(mosaic_window, mosaic_dc);
+            }
+
+            glfwMakeContextCurrent(control_window);
+            glClearColor(0.5, 0.25, time, 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            
+            glfwSwapBuffers(control_window);
+
+            GetMessage(&message, nullptr, 0, 0);
+            TranslateMessage(&message);
+            DispatchMessage(&message);
+
+
+            time += (1.0 / 30.0);
+            time = fmodf(time, 1.0);
+        }
+    }
+    catch (std::exception& e) {
+        std::cerr << "Error: Not a valid display configuration: " << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
 
     return EXIT_SUCCESS;
 }
