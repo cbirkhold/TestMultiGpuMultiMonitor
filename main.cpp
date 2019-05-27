@@ -75,9 +75,11 @@ namespace {
             for (size_t c = 0; c < display_grid.columns; ++c) {
                 const NvU32 display_id = display_grid.displays[c + (r * display_grid.columns)].displayId;
 
-                std::cout << indent << "[" << r << "," << c << "] 0x" << std::hex << std::setfill('0') << std::setw(8) << display_id << std::dec;
+                stream << indent << "[" << r << "," << c << "] 0x" << std::hex << std::setfill('0') << std::setw(8) << display_id << std::dec;
             }
         }
+
+        stream << std::endl;
     }
 
     void print_display_flags_to_stream(std::ostream& stream, DWORD flags)
@@ -786,7 +788,7 @@ main(int argc, char* argv[])
         throw std::runtime_error("Failed to initialize NVAPI!");
     }
 
-    std::shared_ptr<uint8_t> nvapi_unload(reinterpret_cast<uint8_t*>(0), [](uint8_t*) {
+    atexit([]() {
         NvAPI_Unload();
     });
 
