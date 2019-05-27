@@ -2,15 +2,21 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+//------------------------------------------------------------------------------
+// STL
+//------------------------------------------------------------------------------
+
 #include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <iomanip>
 #include <string>
 #include <vector>
+#include <thread>
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//------------------------------------------------------------------------------
+// Platform
+//------------------------------------------------------------------------------
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -18,18 +24,35 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+//------------------------------------------------------------------------------
+// NVAPI
+//------------------------------------------------------------------------------
+
+#include <nvapi.h>
+
+//------------------------------------------------------------------------------
+// GLFW
+//------------------------------------------------------------------------------
+
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//------------------------------------------------------------------------------
+// GLEW
+//------------------------------------------------------------------------------
 
 #include <GL/glew.h>
 #include <GL/wglew.h>
-#include <nvapi.h>
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//------------------------------------------------------------------------------
+// OpenVR
+//------------------------------------------------------------------------------
+
+#include <openvr.h>
+
+//------------------------------------------------------------------------------
+// Toolbox
+//------------------------------------------------------------------------------
 
 #include "OpenGLUtilities.h"
 
@@ -129,6 +152,14 @@ namespace {
 
         rect_s() {}
         rect_s(long x, long y, long w, long h) : m_x(x), m_y(y), m_width(w), m_height(h) {}
+
+        bool operator==(const rect_s& rhs) const noexcept {
+            return ((rhs.m_x == m_x) && (rhs.m_y == m_y) && (rhs.m_width == m_width) && (rhs.m_height == m_height));
+        }
+
+        bool operator!=(const rect_s& rhs) const noexcept {
+            return ((rhs.m_x != m_x) || (rhs.m_y != m_y) || (rhs.m_width != m_width) || (rhs.m_height != m_height));
+        }
     } rect_t;
 
     //------------------------------------------------------------------------------
@@ -420,6 +451,53 @@ namespace {
             }
 
             //------------------------------------------------------------------------------
+            // Detect OpenVR HMD.
+            //------------------------------------------------------------------------------
+            rect_t vr_virtual_screen_rect;
+
+            if (vr::VR_IsHmdPresent()) {
+                vr::IVRSystem* const vr_system = vr::VRSystem();
+
+                if (vr_system) {
+                    uint64_t device_luid = 0;
+                    vr_system->GetOutputDevice(&device_luid, vr::TextureType_OpenGL);
+                    std::cout << "OpenVR output device (LUID): 0x" << std::hex << std::setfill('0') << std::setw(8) << device_luid << std::dec << std::endl;
+
+                    if (vr_system->IsDisplayOnDesktop()) {
+                        std::cout << "OpenVR is in extended mode" << std::endl;
+
+                        vr::IVRExtendedDisplay* const vr_extended_display = vr::VRExtendedDisplay();
+
+                        if (vr_extended_display) {
+                            int32_t x = 0;
+                            int32_t y = 0;
+                            uint32_t w = 0;
+                            uint32_t h = 0;
+
+                            vr_extended_display->GetWindowBounds(&x, &y, &w, &h);
+                            std::cout << "OpenVR window bounds: " << x << ", " << y << ", " << w << ", " << h << std::endl;
+
+                            vr_virtual_screen_rect.m_x = x;
+                            vr_virtual_screen_rect.m_y = y;
+                            vr_virtual_screen_rect.m_width = w;
+                            vr_virtual_screen_rect.m_height = h;
+
+                            for (size_t i = 0; i < 2; ++i) {
+                                uint32_t x = 0;
+                                uint32_t y = 0;
+
+                                vr_extended_display->GetEyeOutputViewport(vr::EVREye(i), &x, &y, &w, &h);
+                                std::cout << "OpenVR " << (i == vr::Eye_Left ? "left" : "right") << " eye viewport: " << x << ", " << y << ", " << w << ", " << h << std::endl;
+                            }
+                        }
+                    }
+                    else {
+                        m_is_openvr_display_in_direct_mode = true;
+                    }
+                }
+            }
+
+            //------------------------------------------------------------------------------
             // Select displays.
             //------------------------------------------------------------------------------
 
@@ -427,7 +505,10 @@ namespace {
 
             for (const auto& display : m_displays) {
                 if (display->valid_non_mosaic()) {
-                    if (!m_control_display) {
+                    if (display->virtual_screen_rect() == vr_virtual_screen_rect) {
+                        m_openvr_display = display;
+                    }
+                    else if (!m_control_display) {
                         m_control_display = display;
                     }
                 }
@@ -444,15 +525,17 @@ namespace {
                 throw std::runtime_error("No valid control display available!");
             }
 
-            if (!m_mosaic_display) {
-                throw std::runtime_error("No valid mosaic display available!");
+            if (!m_mosaic_display && !m_openvr_display && !m_is_openvr_display_in_direct_mode) {
+                throw std::runtime_error("No valid Mosaic/OpenVR display available!");
             }
         }
 
      public:
 
-         std::shared_ptr<Display> control_display() const { return m_control_display; }
-         std::shared_ptr<Display> mosaic_display() const { return m_mosaic_display; }
+         std::shared_ptr<Display> control_display() const noexcept { return m_control_display; }
+         std::shared_ptr<Display> mosaic_display() const noexcept { return m_mosaic_display; }
+         std::shared_ptr<Display> openvr_display() const noexcept { return m_openvr_display; }
+         bool openvr_display_in_direct_mode() const noexcept { return m_is_openvr_display_in_direct_mode; }
 
     private:
 
@@ -460,6 +543,8 @@ namespace {
 
         std::shared_ptr<Display>                    m_control_display;
         std::shared_ptr<Display>                    m_mosaic_display;
+        std::shared_ptr<Display>                    m_openvr_display;
+        bool                                        m_is_openvr_display_in_direct_mode = false;
     };
 
     ////////////////////////////////////////////////////////////////////////////////
@@ -533,11 +618,11 @@ namespace {
     }
 
     //------------------------------------------------------------------------------
-    // Create a native window (not GLFW) for the mosaic window. We don't need event
-    // handling and prefer full direct control.
+    // Create a native window (not GLFW) for the Mosaic/OpenVR window. We don't need
+    // event handling and prefer full direct control.
     //------------------------------------------------------------------------------
 
-    HWND create_mosaic_window(std::shared_ptr<Display> mosaic_display)
+    HWND create_stereo_display_window(std::shared_ptr<Display> display)
     {
         //------------------------------------------------------------------------------
         // Register a window class.
@@ -587,10 +672,10 @@ namespace {
         RECT window_rect = {};
         {
             SetRect(&window_rect,
-                mosaic_display->virtual_screen_rect().m_x,
-                mosaic_display->virtual_screen_rect().m_y,
-                (mosaic_display->virtual_screen_rect().m_x + mosaic_display->virtual_screen_rect().m_width),
-                (mosaic_display->virtual_screen_rect().m_y + mosaic_display->virtual_screen_rect().m_height));
+                display->virtual_screen_rect().m_x,
+                display->virtual_screen_rect().m_y,
+                (display->virtual_screen_rect().m_x + display->virtual_screen_rect().m_width),
+                (display->virtual_screen_rect().m_y + display->virtual_screen_rect().m_height));
 
             AdjustWindowRect(&window_rect, style, FALSE);
         }
@@ -695,7 +780,7 @@ namespace {
     HDC support_dc = nullptr;
     HGLRC support_gl_context = nullptr;
 
-    void create_render_contexts(const DisplayConfiguration& display_configuration)
+    void create_render_contexts(std::shared_ptr<Display> stereo_display)
     {
         //------------------------------------------------------------------------------
         // Identify primary/support GPUs.
@@ -716,21 +801,23 @@ namespace {
             GPU_DEVICE gpu_device;
             gpu_device.cb = sizeof(gpu_device);
 
-            for (UINT device_index = 0; wglEnumGpuDevicesNV(gpu, device_index, &gpu_device); ++device_index) {
-                if ((gpu_device.Flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) {
-                    continue;
-                }
+            bool gpu_assigned = false;
 
+            for (UINT device_index = 0; wglEnumGpuDevicesNV(gpu, device_index, &gpu_device); ++device_index) {
                 std::cout << "  Device " << device_index << ": ";
                 std::cout << gpu_device.DeviceString << ", " << gpu_device.DeviceName << ", ";
                 print_display_flags_to_stream(std::cout, gpu_device.Flags);
                 std::cout << std::endl;
 
-                if (display_configuration.mosaic_display()->name() == gpu_device.DeviceName) {
-                    primary_gpu = gpu;
-                }
-                else if (!support_gpu) {
-                    support_gpu = gpu;
+                if (!gpu_assigned) {
+                    if (!primary_gpu && (!stereo_display || (stereo_display->name() == gpu_device.DeviceName))) {
+                        primary_gpu = gpu;
+                        gpu_assigned = true;
+                    }
+                    else if (!support_gpu) {
+                        support_gpu = gpu;
+                        gpu_assigned = true;
+                    }
                 }
             }
 
@@ -782,6 +869,8 @@ namespace {
 int
 main(int argc, char* argv[])
 {
+    bool ALWAYS_USE_OPENVR_HMD_WHEN_AVAILABLE = true;
+
     //------------------------------------------------------------------------------
     // Initialize NVAPI.
     if (NvAPI_Initialize() != NVAPI_OK) {
@@ -824,6 +913,27 @@ main(int argc, char* argv[])
     }
 
     //------------------------------------------------------------------------------
+    // Initialize OpenVR if available.
+    if (vr::VR_IsRuntimeInstalled()) {
+        vr::EVRInitError error = vr::VRInitError_None;
+        vr::IVRSystem* vr_system = vr::VR_Init(&error, vr::VRApplication_Scene);
+
+        if ((error != vr::VRInitError_None) || !vr_system) {
+            std::cerr << "Error: Failed to initialize VR system: " << error << ": " << vr::VR_GetVRInitErrorAsEnglishDescription(error) << std::endl;
+            return EXIT_FAILURE;
+        }
+
+        atexit([]() {
+            vr::VR_Shutdown();
+        });
+
+        //------------------------------------------------------------------------------
+        // Keep log a bit cleaner by giving the VR sytstem a chance to complete its
+        // asynchronous startup before we go on.
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+
+    //------------------------------------------------------------------------------
     // Application.
     try {
         //------------------------------------------------------------------------------
@@ -850,9 +960,26 @@ main(int argc, char* argv[])
         }
 
         //------------------------------------------------------------------------------
-        // Create mosaic window and affinity render contexts.
-        const HWND mosaic_window = create_mosaic_window(display_configuration.mosaic_display());
-        create_render_contexts(display_configuration);
+        // Create stereo display window and affinity render contexts.
+        std::shared_ptr<Display> stereo_display;
+
+        if ((display_configuration.openvr_display() || display_configuration.openvr_display_in_direct_mode())
+            && (ALWAYS_USE_OPENVR_HMD_WHEN_AVAILABLE || !display_configuration.mosaic_display()))
+        {
+            //------------------------------------------------------------------------------
+            // If the HMD is not in direct mode move the OpenVR compositor window out of the
+            // way as we are not rendering to it but use our own 'fullscreen' window.
+            if (!display_configuration.openvr_display_in_direct_mode()) {
+                stereo_display = display_configuration.openvr_display();
+                vr::VRCompositor()->CompositorGoToBack();
+            }
+        }
+        else {
+            stereo_display = display_configuration.mosaic_display();
+        }
+
+        const HWND stereo_display_window = (stereo_display ? create_stereo_display_window(stereo_display) : nullptr);
+        create_render_contexts(stereo_display);
 
         //------------------------------------------------------------------------------
         // Run loop.
@@ -867,18 +994,22 @@ main(int argc, char* argv[])
             }
 
             //------------------------------------------------------------------------------
-            // Combine into mosaic window.
-            if ((1)) {
-                const HDC mosaic_dc = GetDC(mosaic_window);
+            // Combine into stereo display window.
+            if (stereo_display_window) {
+                const HDC stereo_display_dc = GetDC(stereo_display_window);
 
-                if (wglMakeCurrent(mosaic_dc, primary_gl_context)) {
+                if (wglMakeCurrent(stereo_display_dc, primary_gl_context)) {
                     glClearColor(0.25, 0.5, GLclampf(time), 1.0);
                     glClear(GL_COLOR_BUFFER_BIT);
 
-                    SwapBuffers(mosaic_dc);
+                    SwapBuffers(stereo_display_dc);
                 }
 
-                ReleaseDC(mosaic_window, mosaic_dc);
+                ReleaseDC(stereo_display_window, stereo_display_dc);
+            }
+            else {
+                assert(display_configuration.openvr_display_in_direct_mode());
+                // TODO: Submit eyes to OpenVR in direct mode using the compositor.
             }
 
             //------------------------------------------------------------------------------
