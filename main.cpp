@@ -211,6 +211,9 @@ namespace {
 
         const std::string& name() const noexcept { return m_name; }
         const rect_t& virtual_screen_rect() const noexcept { return m_virtual_screen_rect; }
+        
+        size_t refresh_rate() const noexcept { return m_refresh_rate; }
+        void set_refresh_rate(size_t refresh_rate) { m_refresh_rate = refresh_rate; }
 
         NvU32 nv_display_id() const noexcept { return m_nv_display_id; }
         NvDisplayHandle nv_display_handle() const noexcept { return m_nv_display_handle; }
@@ -229,6 +232,8 @@ namespace {
 
         const std::string       m_name;
         const rect_t            m_virtual_screen_rect;
+        
+        size_t                  m_refresh_rate = 0;
 
         NvU32                   m_nv_display_id = 0;
         NvDisplayHandle         m_nv_display_handle = nullptr;
@@ -441,6 +446,7 @@ namespace {
                     std::cout << "NVAPI enunmerates display " << first_display_id << " but Windows does not!" << std::endl;
                 }
                 else {
+                    (*it)->set_refresh_rate(display_grid.displaySettings.freq);
                     (*it)->set_nv_mosaic_num_displays(display_grid.displayCount);
                 }
 
