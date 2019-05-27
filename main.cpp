@@ -424,8 +424,10 @@ namespace {
             size_t max_num_displays = 1;
 
             for (const auto& display : m_displays) {
-                if (!m_control_display && display->valid_non_mosaic()) {
-                    m_control_display = display;
+                if (display->valid_non_mosaic()) {
+                    if (!m_control_display) {
+                        m_control_display = display;
+                    }
                 }
                 else if (display->valid_mosaic() && (display->nv_mosaic_num_displays() > max_num_displays)) {
                     m_mosaic_display = display;
