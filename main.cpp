@@ -46,7 +46,7 @@ namespace {
     //------------------------------------------------------------------------------
 
     constexpr int GL_CONTEXT_VERSION_MAJOR = 4;
-    constexpr int GL_CONTEXT_VERSION_MINOR = 1;
+    constexpr int GL_CONTEXT_VERSION_MINOR = 5;
 
 #ifndef NDEBUG
     constexpr int GL_OPENGL_DEBUG_CONTEXT = GLFW_TRUE;
@@ -54,7 +54,7 @@ namespace {
     constexpr int GL_OPENGL_DEBUG_CONTEXT = GLFW_FALSE;
 #endif // NDEBUG
 
-    constexpr char GLSL_VERSION[] = "#version 150";
+    constexpr char GLSL_VERSION[] = "#version 450";
 
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
@@ -63,12 +63,9 @@ namespace {
     // Utilities
     //------------------------------------------------------------------------------
 
-    void glfw_error_callback(int error, const char* const description)
-    {
-        std::cerr << "GLFW: " << description << std::endl;
-    }
+    const std::string NO_INDENT;
 
-    void print_to_stream(std::ostream& stream, const NV_MOSAIC_GRID_TOPO& display_grid, const std::string& indent)
+    void print_to_stream(std::ostream& stream, const NV_MOSAIC_GRID_TOPO& display_grid, const std::string& indent = NO_INDENT)
     {
         stream << indent << display_grid.rows << "x" << display_grid.columns << " (" << display_grid.displayCount << (display_grid.displayCount == 1 ? " display) " : " displays) ");
         stream << display_grid.displaySettings.width << "x" << display_grid.displaySettings.height << " @ " << display_grid.displaySettings.freq << " Hz";
@@ -507,23 +504,6 @@ namespace {
         glfwShowWindow(control_window);
 
         //------------------------------------------------------------------------------
-        // Make the control display contexts current so we can initialize OpenGL (GLEW).
-        glfwMakeContextCurrent(control_window);
-
-        std::cout << "OpenGL vendor: " << glGetString(GL_VENDOR) << std::endl;
-        std::cout << "OpenGL renderer: " << glGetString(GL_RENDERER) << std::endl;
-        std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
-
-        const GLenum glew_result = glewInit();
-
-        if (glew_result != GLEW_OK) {
-            std::string e = "Failed to initialize GLEW: ";
-            e.append(reinterpret_cast<const char*>(glewGetErrorString(glew_result)));
-
-            throw std::runtime_error(e);
-        }
-
-        //------------------------------------------------------------------------------
         // ...
         return control_window;
     }
@@ -818,7 +798,9 @@ main(int argc, char* argv[])
 
     //------------------------------------------------------------------------------
     // Initialize GLFW.
-    glfwSetErrorCallback(&glfw_error_callback);
+    glfwSetErrorCallback([](int error, const char* const description) {
+        std::cerr << "GLFW: " << error << ": " << description << std::endl;
+    });
 
     int glfw_version_major = 0;
     int glfw_version_minor = 0;
@@ -845,8 +827,23 @@ main(int argc, char* argv[])
         DisplayConfiguration display_configuration;
         
         //------------------------------------------------------------------------------
-        // Create control window first as it initialized OpenGL.
+        // Create control window first as we need its context to initialize OpenGL.
         GLFWwindow* const control_window = create_control_window(display_configuration.control_display());
+
+        //------------------------------------------------------------------------------
+        // Iinitialize OpenGL (GLEW) via the control window context.
+        glfwMakeContextCurrent(control_window);
+
+        std::cout << "OpenGL vendor: " << glGetString(GL_VENDOR) << std::endl;
+        std::cout << "OpenGL renderer: " << glGetString(GL_RENDERER) << std::endl;
+        std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
+
+        const GLenum glew_result = glewInit();
+
+        if (glew_result != GLEW_OK) {
+            std::cerr << "Error: Failed to initialize GLEW: " << glewGetErrorString(glew_result) << std::endl;
+            return EXIT_FAILURE;
+        }
 
         //------------------------------------------------------------------------------
         // Create mosaic window and affinity render contexts.
@@ -897,7 +894,7 @@ main(int argc, char* argv[])
         }
     }
     catch (std::exception& e) {
-        std::cerr << "Error: Not a valid display configuration: " << e.what() << std::endl;
+        std::cerr << "Error: " << e.what() << std::endl;
         return EXIT_FAILURE;
     }
 
