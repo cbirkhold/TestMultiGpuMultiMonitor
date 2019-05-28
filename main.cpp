@@ -796,7 +796,7 @@ namespace {
     // event handling and prefer full direct control.
     //------------------------------------------------------------------------------
 
-    HWND create_stereo_display_window(std::shared_ptr<Display> display)
+    HWND create_stereo_display_window(std::shared_ptr<Display> display, const PIXELFORMATDESCRIPTOR& pixel_format_desc)
     {
         //------------------------------------------------------------------------------
         // Register a window class.
@@ -821,25 +821,6 @@ namespace {
         // WS_CLIPSIBLINGS styles. Additionally, the window class attribute should NOT
         // include the CS_PARENTDC style." [SetPixelFormat documentation]
         const DWORD style = (WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
-
-        PIXELFORMATDESCRIPTOR pixel_format_desc = {};
-        {
-            pixel_format_desc.nSize = sizeof(pixel_format_desc);
-            pixel_format_desc.nVersion = 1;
-
-            //------------------------------------------------------------------------------
-            // "PFD_DEPTH_DONTCARE: To select a pixel format without a depth buffer, you
-            // must specify this flag. The requested pixel format can be with or without a
-            // depth buffer. Otherwise, only pixel formats with a depth buffer are
-            // considered." [PIXELFORMATDESCRIPTOR documentation]
-            pixel_format_desc.dwFlags = (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER | PFD_DEPTH_DONTCARE);
-
-            //------------------------------------------------------------------------------
-            // "For RGBA pixel types, it is the size of the color buffer, excluding the
-            // alpha bitplanes." [PIXELFORMATDESCRIPTOR documentation]
-            pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
-            pixel_format_desc.cColorBits = 24;
-        };
 
         //------------------------------------------------------------------------------
         // Create a 'full screen' window.
@@ -954,7 +935,11 @@ namespace {
     HDC support_dc = nullptr;
     HGLRC support_gl_context = nullptr;
 
-    void create_render_contexts(std::shared_ptr<Display> stereo_display)
+    //------------------------------------------------------------------------------
+    // No specific pixel format is required for an affinity (display) context as it
+    // does not have a default framebuffer, however we do bind to the mosaic window
+    // display context for the final pass and thus must match its pixel format.
+    void create_render_contexts(std::shared_ptr<Display> stereo_display, const PIXELFORMATDESCRIPTOR& pixel_format_desc)
     {
         //------------------------------------------------------------------------------
         // Identify primary/support GPUs.
@@ -1015,29 +1000,6 @@ namespace {
 
         const HGPUNV support_gpu = unassigned_gpus.front();
         unassigned_gpus.pop_front();
-
-        //------------------------------------------------------------------------------
-        // No specific pixel format is required for an affinity (display) context as it
-        // does not have a default framebuffer, however we do bind to the mosaic window
-        // display context for the final pass and thus must match its pixel format.
-        PIXELFORMATDESCRIPTOR pixel_format_desc = {};
-        {
-            pixel_format_desc.nSize = sizeof(pixel_format_desc);
-            pixel_format_desc.nVersion = 1;
-
-            //------------------------------------------------------------------------------
-            // "PFD_DEPTH_DONTCARE: To select a pixel format without a depth buffer, you
-            // must specify this flag. The requested pixel format can be with or without a
-            // depth buffer. Otherwise, only pixel formats with a depth buffer are
-            // considered." [PIXELFORMATDESCRIPTOR documentation]
-            pixel_format_desc.dwFlags = (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER | PFD_DEPTH_DONTCARE);
-
-            //------------------------------------------------------------------------------
-            // "For RGBA pixel types, it is the size of the color buffer, excluding the
-            // alpha bitplanes." [PIXELFORMATDESCRIPTOR documentation]
-            pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
-            pixel_format_desc.cColorBits = 24;
-        };
 
         //------------------------------------------------------------------------------
         // Create the OpenGL affinity contexts.
@@ -1196,6 +1158,25 @@ main(int argc, char* argv[])
 
         //------------------------------------------------------------------------------
         // Create stereo display window and affinity render contexts.
+        PIXELFORMATDESCRIPTOR pixel_format_desc = {};
+        {
+            pixel_format_desc.nSize = sizeof(pixel_format_desc);
+            pixel_format_desc.nVersion = 1;
+
+            //------------------------------------------------------------------------------
+            // "PFD_DEPTH_DONTCARE: To select a pixel format without a depth buffer, you
+            // must specify this flag. The requested pixel format can be with or without a
+            // depth buffer. Otherwise, only pixel formats with a depth buffer are
+            // considered." [PIXELFORMATDESCRIPTOR documentation]
+            pixel_format_desc.dwFlags = (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER | PFD_DEPTH_DONTCARE);
+
+            //------------------------------------------------------------------------------
+            // "For RGBA pixel types, it is the size of the color buffer, excluding the
+            // alpha bitplanes." [PIXELFORMATDESCRIPTOR documentation]
+            pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
+            pixel_format_desc.cColorBits = 24;
+        };
+
         std::shared_ptr<Display> stereo_display;
         HWND stereo_display_window = nullptr;
 
@@ -1203,7 +1184,7 @@ main(int argc, char* argv[])
             stereo_display = display_configuration.openvr_display();
 
             if (!display_configuration.openvr_display_in_direct_mode()) {
-                stereo_display_window = create_stereo_display_window(stereo_display);
+                stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
 
                 //------------------------------------------------------------------------------
                 // If the HMD is not in direct mode move the OpenVR compositor window out of the
@@ -1215,10 +1196,10 @@ main(int argc, char* argv[])
         }
         else {
             stereo_display = display_configuration.mosaic_display();
-            stereo_display_window = create_stereo_display_window(stereo_display);
+            stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
         }
 
-        create_render_contexts(stereo_display);
+        create_render_contexts(stereo_display, pixel_format_desc);
 
         //------------------------------------------------------------------------------
         // Create OpenGL objects.
