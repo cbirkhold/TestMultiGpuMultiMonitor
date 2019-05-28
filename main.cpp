@@ -977,14 +977,13 @@ namespace {
         };
 
         //------------------------------------------------------------------------------
-        // Create the OpenGL affinity contexts and share lists between them.
+        // Create the OpenGL affinity contexts.
         primary_gl_context = create_opengl_affinity_context(primary_dc, primary_gpu, pixel_format_desc);
         support_gl_context = create_opengl_affinity_context(support_dc, support_gpu, pixel_format_desc);
-
-        if (wglShareLists(primary_gl_context, support_gl_context)) {
-            throw std::runtime_error("Failed to share OpenGL lists!");
-        }
     }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////
 
 } // unnamed namespace
 
