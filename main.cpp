@@ -985,6 +985,47 @@ namespace {
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
+    void create_texture_backed_render_targets(
+        GLuint* const framebuffers,
+        GLuint* const color_attachments,
+        size_t n,
+        size_t width,
+        size_t height)
+    {
+        glGenFramebuffers(GLsizei(n), framebuffers);
+        glGenTextures(GLsizei(n), color_attachments);
+
+        for (size_t i = 0; i < n; ++i) {
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[i]);
+            glBindTexture(GL_TEXTURE_2D, color_attachments[i]);
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(width), GLsizei(height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_attachments[i], 0);
+
+            const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                throw std::runtime_error("Failed to validate framebuffer status!");
+            }
+        }
+    }
+
+    void delete_texture_backed_render_targets(
+        const GLuint* const framebuffers,
+        const GLuint* const color_attachments,
+        size_t n)
+    {
+        glDeleteTextures(GLsizei(n), color_attachments);
+        glDeleteFramebuffers(GLsizei(n), framebuffers);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////
+
 } // unnamed namespace
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1117,6 +1158,26 @@ main(int argc, char* argv[])
         create_render_contexts(stereo_display);
 
         //------------------------------------------------------------------------------
+        // Create OpenGL objects.
+        GLuint stereo_framebuffers[2] = {};
+        GLuint stereo_textures[2] = {};
+
+        if (primary_dc && primary_gl_context) {
+            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
+                return EXIT_FAILURE;
+            }
+
+            create_texture_backed_render_targets(stereo_framebuffers, stereo_textures, 2, 1440, 1600);
+        }
+
+
+        if (support_dc && support_gl_context) {
+            if (!wglMakeCurrent(support_dc, support_gl_context)) {
+                return EXIT_FAILURE;
+            }
+        }
+
+        //------------------------------------------------------------------------------
         // Run loop.
         double time = 0.0;
 
@@ -1143,8 +1204,45 @@ main(int argc, char* argv[])
                 ReleaseDC(stereo_display_window, stereo_display_dc);
             }
             else {
-                assert(display_configuration.openvr_display_in_direct_mode());
-                // TODO: Submit eyes to OpenVR in direct mode using the compositor.
+                assert(display_configuration.openvr_display_in_direct_mode() && vr_compositor);
+
+                wglMakeCurrent(primary_dc, primary_gl_context);
+
+                glBindFramebuffer(GL_FRAMEBUFFER, stereo_framebuffers[0]);
+                glClearColor(0.5, 0.25, GLclampf(time), 1.0);
+                glClear(GL_COLOR_BUFFER_BIT);
+
+                glBindFramebuffer(GL_FRAMEBUFFER, stereo_framebuffers[1]);
+                glClearColor(0.25, 0.5, GLclampf(time), 1.0);
+                glClear(GL_COLOR_BUFFER_BIT);
+
+                vr::Texture_t eye_texture = {};
+                {
+                    eye_texture.eType = vr::TextureType_OpenGL;
+                    eye_texture.eColorSpace = vr::ColorSpace_Linear;
+                }
+
+                vr::VRTextureBounds_t bounds = {};
+                {
+                    bounds.uMin = 0.0;
+                    bounds.vMin = 0.0;
+                    bounds.uMax = 1.0;
+                    bounds.vMax = 1.0;
+                }
+
+                vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
+
+                for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
+                    eye_texture.handle = (void*)uintptr_t(stereo_textures[eye_index]);
+                    
+                    const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_texture, &bounds, vr::Submit_Default);
+
+                    if (error != vr::VRCompositorError_None) {
+                        std::cerr << "Error: " << error << std::endl;
+                    }
+                }
+
+                glFlush();
             }
 
             //------------------------------------------------------------------------------
