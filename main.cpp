@@ -1179,7 +1179,7 @@ main(int argc, char* argv[])
         GLFWwindow* const control_window = create_control_window(display_configuration.control_display());
 
         //------------------------------------------------------------------------------
-        // Iinitialize OpenGL (GLEW) via the control window context.
+        // Initialize OpenGL (GLEW) via the control window context.
         glfwMakeContextCurrent(control_window);
 
         glewExperimental = GL_TRUE;
