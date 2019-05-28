@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <deque>
 #include <iostream>
 #include <iomanip>
 #include <string>
@@ -20,6 +21,9 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+
+#include <dxgi1_6.h>
+#include <wrl.h>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -465,9 +469,9 @@ namespace {
                 vr::IVRSystem* const vr_system = vr::VRSystem();
 
                 if (vr_system) {
-                    uint64_t device_luid = 0;
-                    vr_system->GetOutputDevice(&device_luid, vr::TextureType_OpenGL);
-                    std::cout << "OpenVR output device (LUID): 0x" << std::hex << std::setfill('0') << std::setw(8) << device_luid << std::dec << std::endl;
+                    uint64_t vr_device_luid = 0;
+                    vr_system->GetOutputDevice(&vr_device_luid, vr::TextureType_OpenGL);
+                    std::cout << "OpenVR output device (LUID): 0x" << std::hex << std::setfill('0') << std::setw(8) << vr_device_luid << std::dec << std::endl;
 
                     if (vr_system->IsDisplayOnDesktop()) {
                         std::cout << "OpenVR is in extended mode" << std::endl;
@@ -498,6 +502,103 @@ namespace {
                         }
                     }
                     else {
+                        //------------------------------------------------------------------------------
+                        // Grab DirectX factory.
+                        Microsoft::WRL::ComPtr<IDXGIFactory> factory;
+
+                        if (FAILED(CreateDXGIFactory(IID_PPV_ARGS(&factory)))) {
+                            throw std::runtime_error("Failed to create DXGI factory!");
+                        }
+
+                        //------------------------------------------------------------------------------
+                        // Find DirectX adapter (GPU) identified by OpenVR.
+                        LUID device_luid = {};
+                        {
+                            device_luid.LowPart = DWORD(vr_device_luid);
+                            device_luid.HighPart = LONG(vr_device_luid >> (sizeof(device_luid.LowPart) * 8));
+                        }
+
+                        bool vr_virtual_screen_rect_identified = false;
+
+                        UINT adapter_index = 0;
+                        IDXGIAdapter* adapter = nullptr;
+
+                        while (!vr_virtual_screen_rect_identified && (factory->EnumAdapters(adapter_index, &adapter) != DXGI_ERROR_NOT_FOUND)) {
+                            DXGI_ADAPTER_DESC adapter_desc = {};
+
+                            if (FAILED(adapter->GetDesc(&adapter_desc))) {
+                                std::cerr << "Error: Failed to get adapter description!" << std::endl;
+                                continue;
+                            }
+
+                            std::cout << "Adapter " << adapter_index << ": ";
+                            std::wcout << adapter_desc.Description;
+                            std::cout << ", 0x" << std::hex << adapter_desc.AdapterLuid.HighPart << std::setfill('0') << std::setw(8) << adapter_desc.AdapterLuid.LowPart << std::dec;
+                            std::cout << std::endl;
+
+                            if ((adapter_desc.AdapterLuid.LowPart == device_luid.LowPart) && (adapter_desc.AdapterLuid.HighPart == device_luid.HighPart)) {
+                                UINT output_index = 0;
+                                IDXGIOutput* output = nullptr;
+
+                                //------------------------------------------------------------------------------
+                                // Enumerate outputs (displays).
+                                while (!vr_virtual_screen_rect_identified && (adapter->EnumOutputs(output_index, &output) != DXGI_ERROR_NOT_FOUND)) {
+                                    DXGI_OUTPUT_DESC output_desc = {};
+
+                                    if (FAILED(output->GetDesc(&output_desc))) {
+                                        std::cerr << "Error: Failed to get output description!" << std::endl;
+                                        continue;
+                                    }
+
+                                    std::cout << "  Output " << output_index << ": ";
+                                    std::wcout << output_desc.DeviceName;
+
+                                    bool first = true;
+
+                                    if (output_desc.AttachedToDesktop) {
+                                        if (first) { std::cout << " ("; }
+                                        else { std::cout << ", "; }
+                                        std::cout << "display attached";
+                                        first = false;
+                                    }
+
+                                    MONITORINFO monitor_info = {};
+                                    monitor_info.cbSize = sizeof(monitor_info);
+
+                                    if (GetMonitorInfo(output_desc.Monitor, &monitor_info)) {
+                                        if (monitor_info.dwFlags & MONITORINFOF_PRIMARY) {
+                                            if (first) { std::cout << " ("; }
+                                            else { std::cout << ", "; }
+                                            std::cout << "primary display";
+                                            first = false;
+
+                                            //------------------------------------------------------------------------------
+                                            // OpenVR demands that the HMD is attached to the same GPU as the primary
+                                            // display. If this is not the case the SteamVR will notify the user.
+                                            vr_virtual_screen_rect.m_x = monitor_info.rcMonitor.left;
+                                            vr_virtual_screen_rect.m_y = monitor_info.rcMonitor.top;
+                                            vr_virtual_screen_rect.m_width = (monitor_info.rcMonitor.right - monitor_info.rcMonitor.left);
+                                            vr_virtual_screen_rect.m_height = (monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top);
+
+                                            vr_virtual_screen_rect_identified = true;
+                                        }
+                                    }
+
+                                    if (!first) { std::cout << ")"; }
+                                    std::cout << std::endl;
+
+                                    output->Release();
+                                    ++output_index;
+                                }
+                            }
+
+                            adapter->Release();
+                            ++adapter_index;
+                        }
+
+                        //------------------------------------------------------------------------------
+                        // Set direct mode flag to indicate that the OpenVR display identifies the
+                        // primary display as opposed to the extended display scanned out to the HMD.
                         m_is_openvr_display_in_direct_mode = true;
                     }
                 }
@@ -527,11 +628,15 @@ namespace {
                 }
             }
 
+            if (!m_control_display && m_openvr_display && m_is_openvr_display_in_direct_mode) {
+                m_control_display = m_openvr_display;
+            }
+
             if (!m_control_display) {
                 throw std::runtime_error("No valid control display available!");
             }
 
-            if (!m_mosaic_display && !m_openvr_display && !m_is_openvr_display_in_direct_mode) {
+            if (!m_mosaic_display && !m_openvr_display) {
                 throw std::runtime_error("No valid Mosaic/OpenVR display available!");
             }
         }
@@ -790,24 +895,21 @@ namespace {
     {
         //------------------------------------------------------------------------------
         // Identify primary/support GPUs.
+        std::deque<HGPUNV> unassigned_gpus;
         HGPUNV primary_gpu = nullptr;
-        HGPUNV support_gpu = nullptr;
 
         UINT gpu_index = 0;
         HGPUNV gpu = nullptr;
 
-        std::vector<HGPUNV> gpus;
-
         while (wglEnumGpusNV(gpu_index, &gpu)) {
             std::cout << "GPU " << gpu_index << ":" << std::endl;
-            gpus.push_back(gpu);
 
             //------------------------------------------------------------------------------
             // Enumerate devices (displays).
             GPU_DEVICE gpu_device;
             gpu_device.cb = sizeof(gpu_device);
 
-            bool gpu_assigned = false;
+            bool is_primary_gpu = false;
 
             for (UINT device_index = 0; wglEnumGpuDevicesNV(gpu, device_index, &gpu_device); ++device_index) {
                 std::cout << "  Device " << device_index << ": ";
@@ -815,24 +917,41 @@ namespace {
                 print_display_flags_to_stream(std::cout, gpu_device.Flags);
                 std::cout << std::endl;
 
-                if (!gpu_assigned) {
-                    if (!primary_gpu && (!stereo_display || (stereo_display->name() == gpu_device.DeviceName))) {
-                        primary_gpu = gpu;
-                        gpu_assigned = true;
-                    }
-                    else if (!support_gpu) {
-                        support_gpu = gpu;
-                        gpu_assigned = true;
-                    }
+                if (stereo_display && (stereo_display->name() == gpu_device.DeviceName)) {
+                    is_primary_gpu = true;
                 }
+            }
+
+            if (is_primary_gpu) {
+                assert(!primary_gpu);
+                primary_gpu = gpu;
+            }
+            else {
+                unassigned_gpus.push_back(gpu);
             }
 
             ++gpu_index;
         }
 
-        if (!primary_gpu && !support_gpu) {
-            throw std::runtime_error("Failed to identify primary or support GPU!");
+        if (!primary_gpu) {
+            if (stereo_display) {
+                throw std::runtime_error("Failed to identify the primary GPU!");
+            }
+
+            if (unassigned_gpus.empty()) {
+                throw std::runtime_error("Failed to identify a primary GPU!");
+            }
+
+            primary_gpu = unassigned_gpus.front();
+            unassigned_gpus.pop_front();
         }
+
+        if (unassigned_gpus.empty()) {
+            throw std::runtime_error("Failed to identify a support GPU!");
+        }
+
+        const HGPUNV support_gpu = unassigned_gpus.front();
+        unassigned_gpus.pop_front();
 
         //------------------------------------------------------------------------------
         // No specific pixel format is required for an affinity (display) context as it
@@ -920,6 +1039,8 @@ main(int argc, char* argv[])
 
     //------------------------------------------------------------------------------
     // Initialize OpenVR if available.
+    vr::IVRCompositor* vr_compositor = nullptr;
+
     if (vr::VR_IsRuntimeInstalled()) {
         vr::EVRInitError error = vr::VRInitError_None;
         vr::IVRSystem* vr_system = vr::VR_Init(&error, vr::VRApplication_Scene);
@@ -937,6 +1058,10 @@ main(int argc, char* argv[])
         // Keep log a bit cleaner by giving the VR sytstem a chance to complete its
         // asynchronous startup before we go on.
         std::this_thread::sleep_for(std::chrono::seconds(2));
+
+        //------------------------------------------------------------------------------
+        // Grab compositor for later use.
+        vr_compositor = vr::VRCompositor();
     }
 
     //------------------------------------------------------------------------------
@@ -968,23 +1093,27 @@ main(int argc, char* argv[])
         //------------------------------------------------------------------------------
         // Create stereo display window and affinity render contexts.
         std::shared_ptr<Display> stereo_display;
+        HWND stereo_display_window = nullptr;
 
-        if ((display_configuration.openvr_display() || display_configuration.openvr_display_in_direct_mode())
-            && (ALWAYS_USE_OPENVR_HMD_WHEN_AVAILABLE || !display_configuration.mosaic_display()))
-        {
-            //------------------------------------------------------------------------------
-            // If the HMD is not in direct mode move the OpenVR compositor window out of the
-            // way as we are not rendering to it but use our own 'fullscreen' window.
+        if (display_configuration.openvr_display() && (ALWAYS_USE_OPENVR_HMD_WHEN_AVAILABLE || !display_configuration.mosaic_display())) {
+            stereo_display = display_configuration.openvr_display();
+
             if (!display_configuration.openvr_display_in_direct_mode()) {
-                stereo_display = display_configuration.openvr_display();
-                vr::VRCompositor()->CompositorGoToBack();
+                stereo_display_window = create_stereo_display_window(stereo_display);
+
+                //------------------------------------------------------------------------------
+                // If the HMD is not in direct mode move the OpenVR compositor window out of the
+                // way as we are not rendering to it but use our own 'fullscreen' window.
+                if (vr_compositor) {
+                    vr_compositor->CompositorGoToBack();
+                }
             }
         }
         else {
             stereo_display = display_configuration.mosaic_display();
+            stereo_display_window = create_stereo_display_window(stereo_display);
         }
 
-        const HWND stereo_display_window = (stereo_display ? create_stereo_display_window(stereo_display) : nullptr);
         create_render_contexts(stereo_display);
 
         //------------------------------------------------------------------------------
