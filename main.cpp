@@ -1078,16 +1078,17 @@ main(int argc, char* argv[])
         // Iinitialize OpenGL (GLEW) via the control window context.
         glfwMakeContextCurrent(control_window);
 
-        std::cout << "OpenGL vendor: " << glGetString(GL_VENDOR) << std::endl;
-        std::cout << "OpenGL renderer: " << glGetString(GL_RENDERER) << std::endl;
-        std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
-
+        glewExperimental = GL_TRUE;
         const GLenum glew_result = glewInit();
 
         if (glew_result != GLEW_OK) {
             std::cerr << "Error: Failed to initialize GLEW: " << glewGetErrorString(glew_result) << std::endl;
             return EXIT_FAILURE;
         }
+
+        std::cout << "OpenGL vendor: " << glGetString(GL_VENDOR) << std::endl;
+        std::cout << "OpenGL renderer: " << glGetString(GL_RENDERER) << std::endl;
+        std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
 
         //------------------------------------------------------------------------------
         // Create stereo display window and affinity render contexts.
