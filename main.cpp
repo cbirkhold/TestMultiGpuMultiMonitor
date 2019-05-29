@@ -84,6 +84,8 @@ namespace {
 
     constexpr char GLSL_VERSION[] = "#version 450";
 
+    constexpr bool USE_OPENVR_COMPOSITOR_IN_EXTENDED_MODE = true;
+
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
@@ -1306,7 +1308,7 @@ namespace {
 
             //------------------------------------------------------------------------------
             // Combine into stereo display window.
-            if (false && stereo_display_window) {
+            if (stereo_display_window) {
                 const HDC stereo_display_dc = GetDC(stereo_display_window);
                 const size_t width = 2880;//GetDeviceCaps(stereo_display_dc, HORZRES);
                 const size_t height = 1600;//GetDeviceCaps(stereo_display_dc, VERTRES);
@@ -1551,13 +1553,20 @@ main(int argc, char* argv[])
             stereo_display = display_configuration.openvr_display();
 
             if (!display_configuration.openvr_display_in_direct_mode()) {
-                stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
+                if (!USE_OPENVR_COMPOSITOR_IN_EXTENDED_MODE) {
+                    stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
+                }
 
                 //------------------------------------------------------------------------------
-                // If the HMD is not in direct mode move the OpenVR compositor window out of the
-                // way as we are not rendering to it but use our own 'fullscreen' window.
+                // If the HMD is not in direct mode and we are using our own 'fullscreen' window
+                // move the OpenVR compositor window out of the way else bring it to the front.
                 if (vr_compositor) {
-                    vr_compositor->CompositorGoToBack();
+                    if (USE_OPENVR_COMPOSITOR_IN_EXTENDED_MODE) {
+                        vr_compositor->CompositorBringToFront();
+                    }
+                    else {
+                        vr_compositor->CompositorGoToBack();
+                    }
                 }
             }
         }
