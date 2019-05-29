@@ -1070,6 +1070,8 @@ namespace {
 
         //------------------------------------------------------------------------------
         // Create the OpenGL affinity contexts.
+        assert(primary_gpu != support_gpu);
+
         primary_gl_context = create_opengl_affinity_context(primary_dc, primary_gpu, pixel_format_desc);
         support_gl_context = create_opengl_affinity_context(support_dc, support_gpu, pixel_format_desc);
     }
