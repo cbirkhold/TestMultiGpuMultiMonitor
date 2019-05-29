@@ -1109,12 +1109,16 @@ namespace {
     }
 
     void delete_texture_backed_render_targets(
-        const GLuint* const framebuffers,
-        const GLuint* const color_attachments,
+        GLuint* const framebuffers,
+        GLuint* const color_attachments,
         size_t n)
     {
         glDeleteTextures(GLsizei(n), color_attachments);
         glDeleteFramebuffers(GLsizei(n), framebuffers);
+
+        memset(color_attachments, 0, (n * sizeof(color_attachments[0])));
+        memset(framebuffers, 0, (n * sizeof(framebuffers[0])));
+    }
     }
 
     ////////////////////////////////////////////////////////////////////////////////
