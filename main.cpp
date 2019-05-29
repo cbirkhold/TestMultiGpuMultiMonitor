@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cassert>
 #include <deque>
+#include <future>
 #include <iostream>
 #include <iomanip>
 #include <string>
@@ -1119,6 +1120,298 @@ namespace {
         memset(color_attachments, 0, (n * sizeof(color_attachments[0])));
         memset(framebuffers, 0, (n * sizeof(framebuffers[0])));
     }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////
+
+    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_WIDTH = 256;
+    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_HEIGHT = 256;
+
+    HWND stereo_display_window = nullptr;
+
+    std::future<void> render_thread;
+    std::atomic_bool exit_render_thread = false;
+
+    GLuint support_framebuffer = 0;
+    GLuint support_color_attachment = 0;
+
+    GLuint primary_framebuffer = 0;
+    GLuint primary_color_attachment = 0;
+    GLuint support_framebuffer_copy = 0;
+    GLuint support_color_attachment_copy = 0;
+
+    void initialize_render_thread()
+    {
+        //------------------------------------------------------------------------------
+        // Support context objects.
+        //------------------------------------------------------------------------------
+
+        if (!wglMakeCurrent(support_dc, support_gl_context)) {
+            throw std::runtime_error("Failed to make OpenGL context current!");
+        }
+
+        gl_init_debug_messages();
+
+        create_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+
+        //------------------------------------------------------------------------------
+        // Primary context objects.
+        //------------------------------------------------------------------------------
+
+        if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
+            throw std::runtime_error("Failed to make OpenGL context current!");
+        }
+
+        gl_init_debug_messages();
+
+        create_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        create_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+    }
+
+    void finalize_render_thread() noexcept
+    {
+        //------------------------------------------------------------------------------
+        // Support context objects.
+        //------------------------------------------------------------------------------
+
+        delete_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, 1);
+
+        //------------------------------------------------------------------------------
+        // Primary context objects.
+        //------------------------------------------------------------------------------
+
+        delete_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, 1);
+        delete_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, 1);
+    }
+
+    void render_loop()
+    {
+        //------------------------------------------------------------------------------
+        // Grab OpenVR compositor.
+        vr::IVRCompositor* const vr_compositor = vr::VRCompositor();
+
+        if (!vr_compositor) {
+            throw std::runtime_error("Valid OpenVR compositor expected!");
+        }
+
+        //------------------------------------------------------------------------------
+        // Optionally initialize render targets/attachments for debugging.
+        if ((1)) {
+            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
+                throw std::runtime_error("Failed to make OpenGL context current!");
+            }
+
+            glBindFramebuffer(GL_FRAMEBUFFER, primary_framebuffer);
+            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+            glDisable(GL_SCISSOR_TEST);
+
+            glClearColor(0.25, 1.0, 1.0, 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer_copy);
+            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+            glDisable(GL_SCISSOR_TEST);
+
+            glClearColor(1.0, 0.25, 1.0, 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            if (!wglMakeCurrent(support_dc, support_gl_context)) {
+                throw std::runtime_error("Failed to make OpenGL context current!");
+            }
+
+            glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer);
+            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+            glDisable(GL_SCISSOR_TEST);
+
+            glClearColor(1.0, 1.0, 0.25, 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+
+        //------------------------------------------------------------------------------
+        // Render loop.
+        double time = 0.0;
+
+        while (!exit_render_thread) {
+            //------------------------------------------------------------------------------
+            // Support context.
+            if (!wglMakeCurrent(support_dc, support_gl_context)) {
+                throw std::runtime_error("Failed to make OpenGL context current!");
+            }
+
+            glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer);
+            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+            glDisable(GL_SCISSOR_TEST);
+
+            glClearColor(0.25, 0.5, GLclampf(time), 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            //------------------------------------------------------------------------------
+            // Copy result of support context to primary context.
+            if ((0)) {
+                constexpr size_t NUM_TILES = 8;
+
+                for (size_t v = 0; v < NUM_TILES; ++v) {
+                    const GLint y = GLint((PER_GPU_PASS_FRAMEBUFFER_HEIGHT / NUM_TILES) * v);
+
+                    for (size_t u = 0; u < NUM_TILES; ++u) {
+                        constexpr GLint LEVEL = 0;
+                        constexpr GLint Z = 0;
+                        constexpr GLint DEPTH = 1;
+
+                        const GLint x = GLint((PER_GPU_PASS_FRAMEBUFFER_WIDTH / NUM_TILES) * u);
+
+                        wglCopyImageSubDataNV(
+                            support_gl_context, support_color_attachment,
+                            GL_TEXTURE_2D, LEVEL, x, y, Z,
+                            primary_gl_context, support_color_attachment_copy,
+                            GL_TEXTURE_2D, LEVEL, x, y, Z,
+                            (PER_GPU_PASS_FRAMEBUFFER_WIDTH / NUM_TILES / 2), (PER_GPU_PASS_FRAMEBUFFER_HEIGHT / NUM_TILES / 2), DEPTH);
+                    }
+                }
+            }
+            else if ((1)) {
+                constexpr GLint LEVEL = 0;
+                constexpr GLint X = 0;
+                constexpr GLint Y = 0;
+                constexpr GLint Z = 0;
+                constexpr GLint DEPTH = 1;
+
+                wglCopyImageSubDataNV(
+                    support_gl_context, support_color_attachment,
+                    GL_TEXTURE_2D, LEVEL, X, Y, Z,
+                    primary_gl_context, support_color_attachment_copy,
+                    GL_TEXTURE_2D, LEVEL, X, Y, Z,
+                    PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT, DEPTH);
+            }
+
+            const GLsync support_context_complete = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            glFlush();
+
+            //------------------------------------------------------------------------------
+            // Primary context.
+            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
+                throw std::runtime_error("Failed to make OpenGL context current!");
+            }
+
+            glBindFramebuffer(GL_FRAMEBUFFER, primary_framebuffer);
+            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+            glDisable(GL_SCISSOR_TEST);
+
+            glClearColor(0.5, 0.25, GLclampf(time), 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            //------------------------------------------------------------------------------
+            // Wait for support context to complete rendering for this frame.
+            glWaitSync(support_context_complete, 0, GL_TIMEOUT_IGNORED);
+
+            //------------------------------------------------------------------------------
+            // Combine into stereo display window.
+            if (false && stereo_display_window) {
+                const HDC stereo_display_dc = GetDC(stereo_display_window);
+                const size_t width = 2880;//GetDeviceCaps(stereo_display_dc, HORZRES);
+                const size_t height = 1600;//GetDeviceCaps(stereo_display_dc, VERTRES);
+
+                if (wglMakeCurrent(stereo_display_dc, primary_gl_context)) {
+                    glBlitNamedFramebuffer(
+                        support_framebuffer_copy, 0,
+                        0, 0, GLint(PER_GPU_PASS_FRAMEBUFFER_WIDTH), GLint(PER_GPU_PASS_FRAMEBUFFER_HEIGHT),
+                        0, 0, GLint(width / 2), GLint(height),
+                        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+                    glBlitNamedFramebuffer(
+                        primary_framebuffer, 0,
+                        0, 0, GLint(PER_GPU_PASS_FRAMEBUFFER_WIDTH), GLint(PER_GPU_PASS_FRAMEBUFFER_HEIGHT),
+                        GLint(width / 2), 0, GLint(width), GLint(height),
+                        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+                    SwapBuffers(stereo_display_dc);
+                }
+
+                ReleaseDC(stereo_display_window, stereo_display_dc);
+            }
+            else {
+                vr::Texture_t eye_texture = {};
+                {
+                    eye_texture.eType = vr::TextureType_OpenGL;
+                    eye_texture.eColorSpace = vr::ColorSpace_Linear;
+                }
+
+                vr::VRTextureBounds_t bounds = {};
+                {
+                    bounds.uMin = 0.0;
+                    bounds.vMin = 0.0;
+                    bounds.uMax = 1.0;
+                    bounds.vMax = 1.0;
+                }
+
+                vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
+
+                for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
+                    if (eye_index == vr::Eye_Left) {
+                        eye_texture.handle = reinterpret_cast<void*>(uintptr_t(support_color_attachment_copy));
+                    }
+                    else {
+                        eye_texture.handle = reinterpret_cast<void*>(uintptr_t(primary_color_attachment));
+                    }
+
+                    const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_texture, &bounds, vr::Submit_Default);
+
+                    if (error != vr::VRCompositorError_None) {
+                        std::cerr << "Error: " << error << std::endl;
+                    }
+                }
+
+                glFlush();
+            }
+
+            time += (1.0 / 90.0);
+            time = fmod(time, 1.0);
+        }
+    }
+
+    void create_render_thread()
+    {
+        std::promise<void> thread_initialized;
+
+        render_thread = std::async(std::launch::async, [&thread_initialized]() {
+            SetThreadDescription(GetCurrentThread(), L"Render Thread");
+
+            try {
+                initialize_render_thread();
+            }
+            catch (...) {
+                thread_initialized.set_exception(std::current_exception());
+                return;
+            }
+
+            thread_initialized.set_value();
+
+            try {
+                render_loop();
+            }
+            catch (...) {
+                finalize_render_thread();
+                throw;
+            }
+
+            finalize_render_thread();
+        });
+
+        thread_initialized.get_future().get();
+    }
+    
+    void terminate_render_thread()
+    {
+        try {
+            exit_render_thread = true;
+            render_thread.get();
+        }
+        catch (std::exception& e) {
+            std::cerr << "Exception: " << e.what() << std::endl;
+        }
+        catch (...) {
+            std::cerr << "Exception: <unknown>!" << std::endl;
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////////
@@ -1253,7 +1546,6 @@ main(int argc, char* argv[])
         };
 
         std::shared_ptr<Display> stereo_display;
-        HWND stereo_display_window = nullptr;
 
         if (display_configuration.openvr_display() && (ALWAYS_USE_OPENVR_HMD_WHEN_AVAILABLE || !display_configuration.mosaic_display())) {
             stereo_display = display_configuration.openvr_display();
@@ -1277,24 +1569,8 @@ main(int argc, char* argv[])
         create_render_contexts(stereo_display, pixel_format_desc);
 
         //------------------------------------------------------------------------------
-        // Create OpenGL objects.
-        GLuint stereo_framebuffers[2] = {};
-        GLuint stereo_textures[2] = {};
-
-        if (primary_dc && primary_gl_context) {
-            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
-                return EXIT_FAILURE;
-            }
-
-            create_texture_backed_render_targets(stereo_framebuffers, stereo_textures, 2, 1440, 1600);
-        }
-
-
-        if (support_dc && support_gl_context) {
-            if (!wglMakeCurrent(support_dc, support_gl_context)) {
-                return EXIT_FAILURE;
-            }
-        }
+        // Create render thread.
+        create_render_thread();
 
         //------------------------------------------------------------------------------
         // Run loop.
@@ -1302,71 +1578,7 @@ main(int argc, char* argv[])
 
         while (!glfwWindowShouldClose(control_window)) {
             //------------------------------------------------------------------------------
-            // Render left/right eye.
-            if ((1)) {
-                wglMakeCurrent(support_dc, support_gl_context);
-                wglMakeCurrent(primary_dc, primary_gl_context);
-            }
-
-            //------------------------------------------------------------------------------
-            // Combine into stereo display window.
-            if (stereo_display_window) {
-                const HDC stereo_display_dc = GetDC(stereo_display_window);
-
-                if (wglMakeCurrent(stereo_display_dc, primary_gl_context)) {
-                    glClearColor(0.25, 0.5, GLclampf(time), 1.0);
-                    glClear(GL_COLOR_BUFFER_BIT);
-
-                    SwapBuffers(stereo_display_dc);
-                }
-
-                ReleaseDC(stereo_display_window, stereo_display_dc);
-            }
-            else {
-                assert(display_configuration.openvr_display_in_direct_mode() && vr_compositor);
-
-                wglMakeCurrent(primary_dc, primary_gl_context);
-
-                glBindFramebuffer(GL_FRAMEBUFFER, stereo_framebuffers[0]);
-                glClearColor(0.5, 0.25, GLclampf(time), 1.0);
-                glClear(GL_COLOR_BUFFER_BIT);
-
-                glBindFramebuffer(GL_FRAMEBUFFER, stereo_framebuffers[1]);
-                glClearColor(0.25, 0.5, GLclampf(time), 1.0);
-                glClear(GL_COLOR_BUFFER_BIT);
-
-                vr::Texture_t eye_texture = {};
-                {
-                    eye_texture.eType = vr::TextureType_OpenGL;
-                    eye_texture.eColorSpace = vr::ColorSpace_Linear;
-                }
-
-                vr::VRTextureBounds_t bounds = {};
-                {
-                    bounds.uMin = 0.0;
-                    bounds.vMin = 0.0;
-                    bounds.uMax = 1.0;
-                    bounds.vMax = 1.0;
-                }
-
-                vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
-
-                for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
-                    eye_texture.handle = (void*)uintptr_t(stereo_textures[eye_index]);
-                    
-                    const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_texture, &bounds, vr::Submit_Default);
-
-                    if (error != vr::VRCompositorError_None) {
-                        std::cerr << "Error: " << error << std::endl;
-                    }
-                }
-
-                glFlush();
-            }
-
-            //------------------------------------------------------------------------------
             // Render control window.
-            glfwMakeContextCurrent(control_window);
             glClearColor(0.5, 0.25, GLclampf(time), 1.0);
             glClear(GL_COLOR_BUFFER_BIT);
             
@@ -1379,6 +1591,8 @@ main(int argc, char* argv[])
             time += (1.0 / 30.0);
             time = fmod(time, 1.0);
         }
+
+        terminate_render_thread();
     }
     catch (std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
