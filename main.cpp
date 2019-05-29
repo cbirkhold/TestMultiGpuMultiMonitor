@@ -141,6 +141,71 @@ namespace {
         }
     }
 
+#if GL_VERSION_4_3
+    void APIENTRY gl_message_callback(GLenum source_, GLenum type_, GLuint id, GLenum severity, GLsizei length, const GLchar* const message, const void* const userParam)
+    {
+        const char* source = "<unknown source>";
+
+        switch (source_) {
+        case GL_DEBUG_SOURCE_API:             source = "api";             break;
+        case GL_DEBUG_SOURCE_WINDOW_SYSTEM:   source = "window system";   break;
+        case GL_DEBUG_SOURCE_SHADER_COMPILER: source = "shader compiler"; break;
+        case GL_DEBUG_SOURCE_THIRD_PARTY:     source = "third party";     break;
+        case GL_DEBUG_SOURCE_APPLICATION:     source = "application";     break;
+        case GL_DEBUG_SOURCE_OTHER:           source = "other";           break;
+        default: assert(false && "Unknown GL debug message source!");     break;
+        }
+
+        const char* type = "<unknown type>";
+
+        switch (type_) {
+        case GL_DEBUG_TYPE_ERROR:               type = "error";               break;
+        case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR: type = "deprecated behavior"; break;
+        case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:  type = "undefined behavior";  break;
+        case GL_DEBUG_TYPE_PORTABILITY:         type = "portability";         break;
+        case GL_DEBUG_TYPE_PERFORMANCE:         type = "performance";         break;
+        case GL_DEBUG_TYPE_OTHER:               type = "other";               break;
+        case GL_DEBUG_TYPE_MARKER:              type = "marker";              break;
+        case GL_DEBUG_TYPE_PUSH_GROUP:          type = "push group";          break;
+        case GL_DEBUG_TYPE_POP_GROUP:           type = "pop group";           break;
+        default: assert(false && "Unknown GL debug message type!");           break;
+        }
+
+        const char* log_level = "<unknown level>";
+
+        switch (severity) {
+        case GL_DEBUG_SEVERITY_NOTIFICATION: log_level = "Info";        break;
+        case GL_DEBUG_SEVERITY_HIGH:         log_level = "Error";       break;
+        case GL_DEBUG_SEVERITY_MEDIUM:       log_level = "Warning";     break;
+        case GL_DEBUG_SEVERITY_LOW:          log_level = "Info";        break;
+        default: assert(false && "Unknown GL debug message severity!"); break;
+        }
+
+        std::cout << log_level << ": OpenGL debug: " << source <<": " << type << ": " << message << std::endl;
+    }
+#endif // GL_VERSION_4_3
+
+    void gl_init_debug_messages()
+    {
+#if GL_VERSION_4_3
+#ifndef NDEBUG
+        glDebugMessageCallback(&gl_message_callback, &gl_message_callback);
+
+        if ((1)) {
+            glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+        }
+        else {
+            glDebugMessageControl(GL_DEBUG_SOURCE_API, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+            glDebugMessageControl(GL_DEBUG_SOURCE_WINDOW_SYSTEM, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+            glDebugMessageControl(GL_DEBUG_SOURCE_SHADER_COMPILER, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+            glDebugMessageControl(GL_DEBUG_SOURCE_THIRD_PARTY, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+            glDebugMessageControl(GL_DEBUG_SOURCE_APPLICATION, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+            glDebugMessageControl(GL_DEBUG_SOURCE_OTHER, GL_DONT_CARE, GL_DONT_CARE, 0, nullptr, GL_TRUE);
+        }
+#endif // NDEBUG
+#endif // GL_VERSION_4_3
+    }
+
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
@@ -1157,6 +1222,8 @@ main(int argc, char* argv[])
         std::cout << "OpenGL vendor: " << glGetString(GL_VENDOR) << std::endl;
         std::cout << "OpenGL renderer: " << glGetString(GL_RENDERER) << std::endl;
         std::cout << "OpenGL version: " << glGetString(GL_VERSION) << std::endl;
+
+        gl_init_debug_messages();
 
         //------------------------------------------------------------------------------
         // Create stereo display window and affinity render contexts.
