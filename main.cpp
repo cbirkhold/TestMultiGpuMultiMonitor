@@ -192,7 +192,7 @@ namespace {
                 return false;
             }
 
-            if ((m_nv_num_physical_gpus != 1) || (m_nv_mosaic_num_displays != 1)) {
+            if ((m_nv_num_physical_gpus != 1) || (m_nv_mosaic_num_displays > 1)) {
                 return false;
             }
 
@@ -449,10 +449,12 @@ namespace {
             // If a topology is enabled show which one.
             if (!mosaic_topology.enabled) {
                 if (mosaic_topology.isPossible) {
-                    throw std::runtime_error("Mosaic is DISABLED (but possible)!");
+                    std::cout << "Warning: Mosaic is DISABLED (but possible)!" << std::endl;
+                    return;
                 }
                 else {
-                    throw std::runtime_error("Mosaic is DISABLED!");
+                    std::cout << "Warning: Mosaic is DISABLED!" << std::endl;
+                    return;
                 }
             }
 
