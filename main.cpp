@@ -354,36 +354,53 @@ namespace {
 
             //------------------------------------------------------------------------------
             // Select displays.
-            size_t max_num_displays = 1;
-
             for (const auto& display : m_displays) {
-                if (display->valid_non_mosaic()) {
-                    if (display->virtual_screen_rect() == vr_virtual_screen_rect) {
-                        m_openvr_display = display;
-                    }
-                    else if (!m_control_display) {
-                        m_control_display = display;
+                const bool is_mosaic = display->valid_mosaic();
+
+#ifndef NDEBUG
+                std::cout << (*display) << std::endl;
+#endif // NDEBUG
+
+                if (is_mosaic) {
+                    if (!m_mosaic_display || (display->nv_mosaic_num_displays() > m_mosaic_display->nv_mosaic_num_displays())) {
+                        m_mosaic_display = display;
                     }
                 }
-                else if (display->valid_mosaic() && (display->nv_mosaic_num_displays() > max_num_displays)) {
-                    m_mosaic_display = display;
-                    max_num_displays = display->nv_mosaic_num_displays();
-                }
-                else {
-                    throw std::runtime_error("Invalid display!");
+                //------------------------------------------------------------------------------
+                //! OpenVR does not always return correct y coordinate for virtual screen rect.
+                //! We ignore x also and go by width and height assuming its a unique display
+                //! resolution only used by HMDs.
+                else if ((display->virtual_screen_rect().m_width == vr_virtual_screen_rect.m_width) && (display->virtual_screen_rect().m_height == vr_virtual_screen_rect.m_height)) {
+                    assert(!m_openvr_display);
+                    m_openvr_display = display;
                 }
             }
 
-            if (!m_control_display && m_openvr_display && m_is_openvr_display_in_direct_mode) {
-                m_control_display = m_openvr_display;
+            for (const auto& display : m_displays) {
+                if ((!m_mosaic_display || (display->logical_gpu_index() != m_mosaic_display->logical_gpu_index())) &&
+                    (!m_openvr_display || (display->logical_gpu_index() != m_openvr_display->logical_gpu_index())))
+                {
+                    m_control_display = display;
+                    break;
+                }
             }
 
             if (!m_control_display) {
-                throw std::runtime_error("No valid control display available!");
+                for (const auto& display : m_displays) {
+                    if ((display != m_mosaic_display) && ((display != m_openvr_display) || m_is_openvr_display_in_direct_mode)) {
+                        std::cout << "Warning: Control display is on same GPU as Mosaic/OpenVR display!" << std::endl;
+                        m_control_display = display;
+                        break;
+                    }
+                }
             }
 
             if (!m_mosaic_display && !m_openvr_display) {
-                throw std::runtime_error("No valid Mosaic/OpenVR display available!");
+                throw std::runtime_error("Expected a valid Mosaic or OpenVR display!");
+            }
+
+            if (!m_control_display) {
+                throw std::runtime_error("Expected a valid control display!");
             }
         }
 
