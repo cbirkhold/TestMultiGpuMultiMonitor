@@ -975,7 +975,7 @@ namespace {
         }
 
         if (uMsg == WM_DISPLAYCHANGE) {
-            std::cerr << "Warning: Display change occured. This application is not designed to handle such changes at runtime!" << std::endl;
+            std::cout << "Warning: Display change occured. This application is not designed to handle such changes at runtime!" << std::endl;
         }
 
         return DefWindowProc(hWnd, uMsg, wParam, lParam);
@@ -1726,7 +1726,11 @@ main(int argc, char* argv[])
         terminate_render_thread();
     }
     catch (std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+        std::cerr << "Exception: " << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
+    catch (...) {
+        std::cerr << "Exception: <unknown>!" << std::endl;
         return EXIT_FAILURE;
     }
 
