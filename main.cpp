@@ -338,8 +338,18 @@ namespace {
             //------------------------------------------------------------------------------
             // Get display info.
             enum_displays();
-            enum_mosaics();
             enum_logical_gpus();
+
+            try {
+                enum_mosaics();
+            }
+            catch (std::exception& e) {
+                std::cerr << "Exception: " << e.what() << std::endl;
+            }
+            catch (...) {
+                std::cerr << "Exception: <unknown>!" << std::endl;
+            }
+
             const rect_t vr_virtual_screen_rect = identify_openvr_display();
 
             //------------------------------------------------------------------------------
@@ -1542,12 +1552,13 @@ main(int argc, char* argv[])
     //------------------------------------------------------------------------------
     // Initialize NVAPI.
     if (NvAPI_Initialize() != NVAPI_OK) {
-        throw std::runtime_error("Failed to initialize NVAPI!");
+        std::cout << "Warning: Failed to initialize NVAPI!" << std::endl;
     }
-
-    atexit([]() {
-        NvAPI_Unload();
-    });
+    else {
+        atexit([]() {
+            NvAPI_Unload();
+        });
+    }
 
     //------------------------------------------------------------------------------
     // Print interface version string.
