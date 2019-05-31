@@ -7,6 +7,7 @@
 //------------------------------------------------------------------------------
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <deque>
 #include <future>
@@ -50,6 +51,15 @@
 #include <GL/wglew.h>
 
 //------------------------------------------------------------------------------
+// GLM
+//------------------------------------------------------------------------------
+
+#define GLM_FORCE_MESSAGES
+#define GLM_FORCE_SWIZZLE
+
+#include <glm/glm.hpp>
+
+//------------------------------------------------------------------------------
 // OpenVR
 //------------------------------------------------------------------------------
 
@@ -73,6 +83,8 @@ namespace {
     // Constants
     //------------------------------------------------------------------------------
 
+    constexpr size_t NUM_EYES = 2;
+
     constexpr int GL_CONTEXT_VERSION_MAJOR = 4;
     constexpr int GL_CONTEXT_VERSION_MINOR = 5;
 
@@ -92,6 +104,34 @@ namespace {
     //------------------------------------------------------------------------------
     // Utilities
     //------------------------------------------------------------------------------
+
+    //------------------------------------------------------------------------------
+    // Convert a OpenVR 3x4 matrix to a glm 4x4 matrix.
+    glm::mat4 glm_from_hmd_matrix(const vr::HmdMatrix34_t& m)
+    {
+        static_assert(sizeof(m.m[0]) == sizeof(glm::vec4), "!");
+        static_assert(alignof(decltype(m.m[0])) == alignof(glm::vec4), "!");
+
+        return glm::transpose(glm::mat4(
+            (glm::vec4&)m.m[0],
+            (glm::vec4&)m.m[1],
+            (glm::vec4&)m.m[2],
+            glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)));
+    }
+
+    //------------------------------------------------------------------------------
+    // Convert a OpenVR 4x4 matrix to a glm 4x4 matrix.
+    glm::mat4 glm_from_hmd_matrix(const vr::HmdMatrix44_t& m)
+    {
+        static_assert(sizeof(m.m[0]) == sizeof(glm::vec4), "!");
+        static_assert(alignof(decltype(m.m[0])) == alignof(glm::vec4), "!");
+
+        return glm::transpose(glm::mat4(
+            (glm::vec4&)m.m[0],
+            (glm::vec4&)m.m[1],
+            (glm::vec4&)m.m[2],
+            (glm::vec4&)m.m[3]));
+    }
 
     const std::string NO_INDENT;
 
@@ -1263,9 +1303,99 @@ namespace {
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
-    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_WIDTH = 256;
-    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_HEIGHT = 256;
+    class RenderPoints
+    {
+    public:
 
+        static GLuint create_program()
+        {
+            static const char* const vs_string =
+                "#version 410\n"
+                "uniform vec4 u_rect;\n"
+                "uniform mat4 u_mvp;\n"
+                "out vec2 v_uv;\n"
+                "void main() {\n"
+                "    int x = (gl_VertexID % 1024);\n"
+                "    int y = (gl_VertexID / 1024);\n"
+                "    vec2 uv = (vec2(x, y) * (1.0 / 1023.0));\n"
+                "    gl_Position = (u_mvp * vec4((u_rect.xy + (uv * u_rect.zw)), 0.0, 1.0));\n"
+                "    v_uv = vec2(uv.x, uv.y);\n"
+                "}\n";
+
+            static const char* const fs_string =
+                "#version 410\n"
+                "in vec2 v_uv;\n"
+                "out vec4 f_color;\n"
+                "void main() {\n"
+                "    float vignette = pow(clamp(((v_uv.x * (1.0f - v_uv.x)) * (v_uv.y * (1.0f - v_uv.y)) * 36.0f), 0.0, 1.0), 4.0);\n"
+                "    f_color = vec4((v_uv.rg * vignette), 0.0, 1.0);\n"
+                "}\n";
+
+            try {
+                const GLuint vertex_shader = toolbox::OpenGLShader::create_from_source(GL_VERTEX_SHADER, vs_string);
+                const GLuint fragment_shader = toolbox::OpenGLShader::create_from_source(GL_FRAGMENT_SHADER, fs_string);
+
+                toolbox::OpenGLProgram::attribute_location_list_t attribute_locations;
+                toolbox::OpenGLProgram::frag_data_location_list_t frag_data_locations;
+                const GLuint program = toolbox::OpenGLProgram::create_from_shaders(vertex_shader, fragment_shader, attribute_locations, frag_data_locations);
+
+                s_uniform_location_rect = glGetUniformLocation(program, "u_rect");
+                s_uniform_location_mvp = glGetUniformLocation(program, "u_mvp");
+
+                return program;
+            }
+            catch (std::exception& e) {
+                std::cerr << "Exception: " << e.what() << std::endl;
+            }
+            catch (...) {
+                std::cerr << "Exception: <unknown>!" << std::endl;
+            }
+
+            return 0;
+        }
+
+        static void set_rect(const float* const ndc_rect)
+        {
+            if (s_uniform_location_rect != -1) {
+                glUniform4fv(s_uniform_location_rect, 1, ndc_rect);
+            }
+        }
+
+        static void set_mvp(const float* const mvp)
+        {
+            if (s_uniform_location_mvp != -1) {
+                glUniformMatrix4fv(s_uniform_location_mvp, 1, GL_FALSE, mvp);
+            }
+        }
+
+        static void draw(GLuint& vao)
+        {
+            if (!vao) {
+                glGenVertexArrays(1, &vao);
+            }
+
+            glBindVertexArray(vao);
+            glDrawArrays(GL_POINTS, 0, (1024 * 1024));
+        }
+
+    private:
+
+        static GLint        s_uniform_location_rect;
+        static GLint        s_uniform_location_mvp;
+    };
+
+    GLint RenderPoints::s_uniform_location_rect = -1;
+    GLint RenderPoints::s_uniform_location_mvp = -1;
+
+    ////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////
+
+    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_WIDTH = 1024;
+    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_HEIGHT = 1024;
+    constexpr size_t PRIMARY_CONTEXT_INDEX = 0;
+    constexpr size_t SUPPORT_CONTEXT_INDEX = 1;
+
+    std::shared_ptr<Display> stereo_display;
     HWND stereo_display_window = nullptr;
 
     std::future<void> render_thread;
@@ -1278,6 +1408,18 @@ namespace {
     GLuint primary_color_attachment = 0;
     GLuint support_framebuffer_copy = 0;
     GLuint support_color_attachment_copy = 0;
+
+    GLuint render_points_programs[2] = {};
+    GLuint render_points_vao[2] = {};
+
+    float rect[4] = { -1.0, -1.0, 2.0, 2.0 };
+
+    float mvp[16] = {
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    };
 
     void initialize_render_thread()
     {
@@ -1292,6 +1434,7 @@ namespace {
         gl_init_debug_messages();
 
         create_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        render_points_programs[SUPPORT_CONTEXT_INDEX] = RenderPoints::create_program();
 
         //------------------------------------------------------------------------------
         // Primary context objects.
@@ -1305,6 +1448,7 @@ namespace {
 
         create_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
         create_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        render_points_programs[PRIMARY_CONTEXT_INDEX] = RenderPoints::create_program();
     }
 
     void finalize_render_thread() noexcept
@@ -1326,11 +1470,38 @@ namespace {
     void render_loop()
     {
         //------------------------------------------------------------------------------
-        // Grab OpenVR compositor.
+        // Grab OpenVR system/compositor.
+        vr::IVRSystem* const vr_system = vr::VRSystem();
         vr::IVRCompositor* const vr_compositor = vr::VRCompositor();
 
-        if (!vr_compositor) {
+        if (!vr_system || !vr_compositor) {
             throw std::runtime_error("Valid OpenVR compositor expected!");
+        }
+
+        //------------------------------------------------------------------------------
+        // Grab per-eye projection matrices (these are constant per device).
+        glm::mat4 projection_matrices[2] = { glm::mat4(1.0), glm::mat4(1.0) };
+        glm::vec4 clipping_planes[2] = { glm::vec4(0.0), glm::vec4(0.0) };
+
+        if (vr_system) {
+            constexpr float near_z = 0.1f;
+            constexpr float far_z = 100.0f;
+
+            for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
+                projection_matrices[eye_index] = glm_from_hmd_matrix(vr_system->GetProjectionMatrix(vr::EVREye(eye_index), near_z, far_z));
+                vr_system->GetProjectionRaw(vr::EVREye(eye_index), &clipping_planes[eye_index].x, &clipping_planes[eye_index].y, &clipping_planes[eye_index].z, &clipping_planes[eye_index].w);
+
+                printf("%s eye projection matrix:\n\t%f\t%f\t%f\t%f\n\t%f\t%f\t%f\t%f\n\t%f\t%f\t%f\t%f\n\t%f\t%f\t%f\t%f\n",
+                    (eye_index == vr::Eye_Left ? "Left" : "Right"),
+                    projection_matrices[eye_index][0].x, projection_matrices[eye_index][1].x, projection_matrices[eye_index][2].x, projection_matrices[eye_index][3].x,
+                    projection_matrices[eye_index][0].y, projection_matrices[eye_index][1].y, projection_matrices[eye_index][2].y, projection_matrices[eye_index][3].y,
+                    projection_matrices[eye_index][0].z, projection_matrices[eye_index][1].z, projection_matrices[eye_index][2].z, projection_matrices[eye_index][3].z,
+                    projection_matrices[eye_index][0].w, projection_matrices[eye_index][1].w, projection_matrices[eye_index][2].w, projection_matrices[eye_index][3].w);
+
+                printf("%s eye clipping planes:\n\t%f\t%f\t%f\t%f\n",
+                    (eye_index == vr::Eye_Left ? "Left" : "Right"),
+                    clipping_planes[eye_index].x, clipping_planes[eye_index].y, clipping_planes[eye_index].z, clipping_planes[eye_index].w);
+            }
         }
 
         //------------------------------------------------------------------------------
@@ -1368,9 +1539,75 @@ namespace {
 
         //------------------------------------------------------------------------------
         // Render loop.
+        std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> render_poses;
+        glm::vec4 prev_eye_to_head_translation[NUM_EYES] = {};
+        glm::mat4 hmd_pose(1.0);
+        float hmd_ipd = 0.0;
+
         double time = 0.0;
 
-        while (!exit_render_thread) {
+        for (size_t frame_index = 0; !exit_render_thread; ++frame_index) {
+            double seconds = 0.0;
+            const double fraction = modf(time, &seconds);
+
+            glm::mat4 eye_to_head_transforms[2] = { glm::mat4(1.0), glm::mat4(1.0) };
+            glm::mat4 eye_transforms[2] = { glm::mat4(1.0), glm::mat4(1.0) };
+
+            //------------------------------------------------------------------------------
+            // If OpenVR is used, sychronize with display.
+            if (!stereo_display_window) {
+                //------------------------------------------------------------------------------
+                // Grab per-eye transform matrices (these may change at runtime with the IPD).
+                if (vr_system) {
+                    for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
+                        eye_to_head_transforms[eye_index] = glm_from_hmd_matrix(vr_system->GetEyeToHeadTransform(vr::EVREye(eye_index)));
+                    }
+                }
+
+                //------------------------------------------------------------------------------
+                // Update IPD.
+                bool ipd_changed = false;
+
+                for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
+                    if (eye_to_head_transforms[eye_index][3] != prev_eye_to_head_translation[eye_index]) {
+                        ipd_changed = true;
+                    }
+
+                    prev_eye_to_head_translation[eye_index] = eye_to_head_transforms[eye_index][3];
+                }
+
+                if (ipd_changed) {
+                    const float ipd = (fabsf(prev_eye_to_head_translation[0].x - prev_eye_to_head_translation[1].x) * 1000.0f);
+                    hmd_ipd = ipd;
+
+                    std::cout << "IPD changed to " << ipd << " [mm]" << std::endl;
+                }
+
+                for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
+                    eye_transforms[eye_index] = ((projection_matrices[eye_index] * glm::inverse(eye_to_head_transforms[eye_index])) * glm::inverse(hmd_pose));
+                }
+
+                //------------------------------------------------------------------------------
+                // Read pose information.
+                vr_compositor->WaitGetPoses(render_poses.data(), uint32_t(render_poses.size()), nullptr, 0);
+
+                for (size_t tracked_device_index = 0; tracked_device_index < render_poses.size(); ++tracked_device_index) {
+                    const vr::TrackedDevicePose_t& render_pose = render_poses[tracked_device_index];
+
+                    if (!render_pose.bDeviceIsConnected || !render_pose.bPoseIsValid) {
+                        continue;
+                    }
+
+                    if (render_pose.eTrackingResult != vr::TrackingResult_Running_OK) {
+                        continue;
+                    }
+
+                    if (tracked_device_index == vr::k_unTrackedDeviceIndex_Hmd) {
+                        hmd_pose = glm_from_hmd_matrix(render_pose.mDeviceToAbsoluteTracking);
+                    }
+                }
+            }
+
             //------------------------------------------------------------------------------
             // Support context.
             if (!wglMakeCurrent(support_dc, support_gl_context)) {
@@ -1381,18 +1618,39 @@ namespace {
             glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
             glDisable(GL_SCISSOR_TEST);
 
-            glClearColor(0.25, 0.5, GLclampf(time), 1.0);
-            glClear(GL_COLOR_BUFFER_BIT);
+            if ((1)) {
+                glClearColor(0.25, 0.25, 0.25, 1.0);
+                glClear(GL_COLOR_BUFFER_BIT);
+
+                glUseProgram(render_points_programs[SUPPORT_CONTEXT_INDEX]);
+
+                RenderPoints::set_rect(rect);
+
+                glm::mat4 pose(1.0);
+                pose[3] = hmd_pose[3];
+                pose[3].z -= 1.0;
+
+                const glm::mat4 mvp = (((projection_matrices[0] * glm::inverse(eye_to_head_transforms[0])) * glm::inverse(hmd_pose)) * pose);
+                RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
+
+                for (size_t i = 0; i < 80; ++i) {
+                    RenderPoints::draw(render_points_vao[SUPPORT_CONTEXT_INDEX]);
+                }
+            }
+            else {
+                glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
 
             //------------------------------------------------------------------------------
             // Copy result of support context to primary context.
-            if ((0)) {
+            if ((1)) {
                 constexpr size_t NUM_TILES = 8;
 
-                for (size_t v = 0; v < NUM_TILES; ++v) {
+                for (size_t v = 0; v < 1/*NUM_TILES*/; ++v) {
                     const GLint y = GLint((PER_GPU_PASS_FRAMEBUFFER_HEIGHT / NUM_TILES) * v);
 
-                    for (size_t u = 0; u < NUM_TILES; ++u) {
+                    for (size_t u = 0; u < 1/*NUM_TILES*/; ++u) {
                         constexpr GLint LEVEL = 0;
                         constexpr GLint Z = 0;
                         constexpr GLint DEPTH = 1;
@@ -1408,7 +1666,7 @@ namespace {
                     }
                 }
             }
-            else if ((1)) {
+            else if ((0)) {
                 constexpr GLint LEVEL = 0;
                 constexpr GLint X = 0;
                 constexpr GLint Y = 0;
@@ -1436,8 +1694,59 @@ namespace {
             glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
             glDisable(GL_SCISSOR_TEST);
 
-            glClearColor(0.5, 0.25, GLclampf(time), 1.0);
-            glClear(GL_COLOR_BUFFER_BIT);
+            if ((1)) {
+                glClearColor(0.25, 0.25, 0.25, 1.0);
+                glClear(GL_COLOR_BUFFER_BIT);
+
+                glUseProgram(render_points_programs[PRIMARY_CONTEXT_INDEX]);
+
+                RenderPoints::set_rect(rect);
+
+                glm::mat4 pose(1.0);
+                pose[3] = hmd_pose[3];
+                pose[3].z -= 1.0;
+
+                const glm::mat4 mvp = (((projection_matrices[1] * glm::inverse(eye_to_head_transforms[1])) * glm::inverse(hmd_pose)) * pose);
+                RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
+
+                for (size_t i = 0; i < 40; ++i) {
+                    RenderPoints::draw(render_points_vao[PRIMARY_CONTEXT_INDEX]);
+                }
+            }
+            else {
+                glClearColor(0.5, 0.25, GLclampf(fraction), 1.0);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
+
+            if ((1)) {
+                glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer_copy);
+                glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+                glDisable(GL_SCISSOR_TEST);
+
+                if ((1)) {
+                    glClearColor(0.25, 0.25, 0.25, 1.0);
+                    glClear(GL_COLOR_BUFFER_BIT);
+
+                    glUseProgram(render_points_programs[PRIMARY_CONTEXT_INDEX]);
+
+                    RenderPoints::set_rect(rect);
+
+                    glm::mat4 pose(1.0);
+                    pose[3] = hmd_pose[3];
+                    pose[3].z -= 1.0;
+
+                    const glm::mat4 mvp = (((projection_matrices[0] * glm::inverse(eye_to_head_transforms[0])) * glm::inverse(hmd_pose)) * pose);
+                    RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
+
+                    for (size_t i = 0; i < 40; ++i) {
+                        RenderPoints::draw(render_points_vao[PRIMARY_CONTEXT_INDEX]);
+                    }
+                }
+                else {
+                    glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                }
+            }
 
             //------------------------------------------------------------------------------
             // Wait for support context to complete rendering for this frame.
@@ -1447,8 +1756,8 @@ namespace {
             // Combine into stereo display window.
             if (stereo_display_window) {
                 const HDC stereo_display_dc = GetDC(stereo_display_window);
-                const size_t width = 2880;//GetDeviceCaps(stereo_display_dc, HORZRES);
-                const size_t height = 1600;//GetDeviceCaps(stereo_display_dc, VERTRES);
+                const size_t width = stereo_display->virtual_screen_rect().m_width;//GetDeviceCaps(stereo_display_dc, HORZRES);
+                const size_t height = stereo_display->virtual_screen_rect().m_height;//GetDeviceCaps(stereo_display_dc, VERTRES);
 
                 if (wglMakeCurrent(stereo_display_dc, primary_gl_context)) {
                     glBlitNamedFramebuffer(
@@ -1483,8 +1792,6 @@ namespace {
                     bounds.vMax = 1.0;
                 }
 
-                vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
-
                 for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
                     if (eye_index == vr::Eye_Left) {
                         eye_texture.handle = reinterpret_cast<void*>(uintptr_t(support_color_attachment_copy));
@@ -1504,7 +1811,6 @@ namespace {
             }
 
             time += (1.0 / 90.0);
-            time = fmod(time, 1.0);
         }
     }
 
@@ -1684,8 +1990,6 @@ main(int argc, char* argv[])
             pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
             pixel_format_desc.cColorBits = 24;
         };
-
-        std::shared_ptr<Display> stereo_display;
 
         if (display_configuration.openvr_display() && (ALWAYS_USE_OPENVR_HMD_WHEN_AVAILABLE || !display_configuration.mosaic_display())) {
             stereo_display = display_configuration.openvr_display();
