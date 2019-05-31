@@ -242,6 +242,15 @@ namespace {
     {
     public:
 
+        static constexpr size_t INVALID_LOGICAL_GPU_INDEX = size_t(-1);
+
+        enum class LogicalGPUIndexSource {
+            DIRECTX,
+            NVAPI,
+        };
+
+    public:
+
         Display(std::string name, const rect_t& virtual_screen_rect)
             : m_name(std::move(name))
             , m_virtual_screen_rect(virtual_screen_rect)
@@ -253,18 +262,6 @@ namespace {
             if ((m_virtual_screen_rect.m_width == 0) || (m_virtual_screen_rect.m_height == 0)) {
                 throw std::runtime_error("Valid virtual screen rect expected!");
             }
-        }
-
-        bool valid_non_mosaic() const noexcept {
-            if ((m_nv_display_id == 0) || (m_nv_display_handle == nullptr)) {
-                return false;
-            }
-
-            if ((m_nv_num_physical_gpus != 1) || (m_nv_mosaic_num_displays > 1)) {
-                return false;
-            }
-
-            return true;
         }
 
         bool valid_mosaic() const noexcept {
@@ -283,9 +280,12 @@ namespace {
 
         const std::string& name() const noexcept { return m_name; }
         const rect_t& virtual_screen_rect() const noexcept { return m_virtual_screen_rect; }
-        
+
         size_t refresh_rate() const noexcept { return m_refresh_rate; }
         void set_refresh_rate(size_t refresh_rate) { m_refresh_rate = refresh_rate; }
+
+        size_t logical_gpu_index() const noexcept { return m_logical_gpu_index; }
+        void set_logical_gpu_index(size_t logical_gpu_index, LogicalGPUIndexSource source) { m_logical_gpu_index = (logical_gpu_index | (size_t(source) << (sizeof(m_logical_gpu_index) * 4))); }
 
         NvU32 nv_display_id() const noexcept { return m_nv_display_id; }
         NvDisplayHandle nv_display_handle() const noexcept { return m_nv_display_handle; }
@@ -300,12 +300,23 @@ namespace {
         size_t nv_mosaic_num_displays() const noexcept { return m_nv_mosaic_num_displays; }
         void set_nv_mosaic_num_displays(size_t nv_mosaic_num_displays) { m_nv_mosaic_num_displays = nv_mosaic_num_displays; }
 
+    public:
+
+        friend std::ostream& operator<<(std::ostream& stream, const Display& display)
+        {
+            stream << "Display: " << display.m_name << ", GPU=" << display.m_logical_gpu_index << ", (";
+            stream << display.m_virtual_screen_rect.m_x << ", " << display.m_virtual_screen_rect.m_y << "), " << display.m_virtual_screen_rect.m_width << " x " << display.m_virtual_screen_rect.m_height << " @ " << display.m_refresh_rate << ", ";
+            stream << "(id=" << display.m_nv_display_id << ", handle=" << display.m_nv_display_handle << ", num_pgpus=" << display.m_nv_num_physical_gpus << ", num_mosaic_displays=" << display.m_nv_mosaic_num_displays << ")";
+            return stream;
+        }
+
     private:
 
         const std::string       m_name;
         const rect_t            m_virtual_screen_rect;
         
         size_t                  m_refresh_rate = 0;
+        size_t                  m_logical_gpu_index = INVALID_LOGICAL_GPU_INDEX;
 
         NvU32                   m_nv_display_id = 0;
         NvDisplayHandle         m_nv_display_handle = nullptr;
@@ -328,6 +339,7 @@ namespace {
             // Get display info.
             enum_displays();
             enum_mosaics();
+            enum_logical_gpus();
             const rect_t vr_virtual_screen_rect = identify_openvr_display();
 
             //------------------------------------------------------------------------------
@@ -458,6 +470,80 @@ namespace {
         }
 
         //------------------------------------------------------------------------------
+        // Which display is connected to which (logical) GPU.
+        void enum_logical_gpus()
+        {
+            //------------------------------------------------------------------------------
+             // Grab DirectX factory.
+            Microsoft::WRL::ComPtr<IDXGIFactory> factory;
+
+            if (FAILED(CreateDXGIFactory(IID_PPV_ARGS(&factory)))) {
+                throw std::runtime_error("Failed to create DXGI factory!");
+            }
+
+            //------------------------------------------------------------------------------
+            // Enumerate DirectX adapters (logical GPUs).
+            UINT adapter_index = 0;
+            IDXGIAdapter* adapter = nullptr;
+
+            while (factory->EnumAdapters(adapter_index, &adapter) != DXGI_ERROR_NOT_FOUND) {
+                DXGI_ADAPTER_DESC adapter_desc = {};
+
+                if (FAILED(adapter->GetDesc(&adapter_desc))) {
+                    std::cerr << "Error: Failed to get adapter description!" << std::endl;
+                    continue;
+                }
+
+                std::cout << "Adapter " << adapter_index << ": ";
+                std::wcout << adapter_desc.Description;
+                std::cout << ", 0x" << std::hex << adapter_desc.AdapterLuid.HighPart << std::setfill('0') << std::setw(8) << adapter_desc.AdapterLuid.LowPart << std::dec;
+                std::cout << std::endl;
+
+                //------------------------------------------------------------------------------
+                // Enumerate outputs (displays).
+                UINT output_index = 0;
+                IDXGIOutput* output = nullptr;
+
+                while (adapter->EnumOutputs(output_index, &output) != DXGI_ERROR_NOT_FOUND) {
+                    DXGI_OUTPUT_DESC output_desc = {};
+
+                    if (FAILED(output->GetDesc(&output_desc))) {
+                        std::cerr << "Error: Failed to get output description!" << std::endl;
+                        continue;
+                    }
+
+                    std::cout << "  Output " << output_index << ": ";
+                    std::wcout << output_desc.DeviceName;
+                    std::cout << std::endl;
+
+                    char display_name[sizeof(output_desc.DeviceName) * 4];
+                    size_t display_name_length = 0;
+
+                    wcstombs_s(&display_name_length, display_name, sizeof(display_name), output_desc.DeviceName, _TRUNCATE);
+
+                    const auto display_it = std::find_if(begin(m_displays), end(m_displays), [display_name](const std::shared_ptr<Display>& display) {
+                        return (display->name() == display_name);
+                    });
+
+                    if (display_it == end(m_displays)) {
+                        std::cout << "DirectX enunmerates display " << display_name << " but Windows does not!" << std::endl;
+                    }
+                    else {
+                        if ((*display_it)->logical_gpu_index() == Display::INVALID_LOGICAL_GPU_INDEX) {
+                            (*display_it)->set_logical_gpu_index(adapter_index, Display::LogicalGPUIndexSource::DIRECTX);
+                        }
+                    }
+
+                    output->Release();
+                    ++output_index;
+                }
+            
+                adapter->Release();
+                ++adapter_index;
+            }
+        }
+
+        //------------------------------------------------------------------------------
         // Get Mosaic information for displays.
         void enum_mosaics()
         {
@@ -465,6 +551,13 @@ namespace {
 
             //------------------------------------------------------------------------------
             // Enumerate displays and note NVIDIA display IDs which are required below.
+            NvLogicalGpuHandle logical_gpu_handles[NVAPI_MAX_LOGICAL_GPUS];
+            NvU32 num_logical_gpus = 0;
+
+            if (NvAPI_EnumLogicalGPUs(logical_gpu_handles, &num_logical_gpus) != NVAPI_OK) {
+                throw std::runtime_error("Failed to enumerate logical GPUs!");
+            }
+
             NvDisplayHandle display_handle = nullptr;
             NvU32 display_index = 0;
 
@@ -472,11 +565,11 @@ namespace {
                 NvAPI_ShortString display_name = {};
 
                 if (NvAPI_GetAssociatedNvidiaDisplayName(display_handle, display_name) == NVAPI_OK) {
-                    const auto it = std::find_if(begin(m_displays), end(m_displays), [display_name](const std::shared_ptr<Display>& display) {
+                    const auto display_it = std::find_if(begin(m_displays), end(m_displays), [display_name](const std::shared_ptr<Display>& display) {
                         return (display->name() == display_name);
                     });
 
-                    if (it == end(m_displays)) {
+                    if (display_it == end(m_displays)) {
                         std::cout << "NVAPI enunmerates display " << display_name << " but Windows does not!" << std::endl;
                     }
                     else {
@@ -490,7 +583,24 @@ namespace {
                                 throw std::runtime_error("Failed to get physical GPU count!");
                             }
 
-                            (*it)->set_nv_display(display_id, display_handle, num_physical_gpus);
+                            (*display_it)->set_nv_display(display_id, display_handle, num_physical_gpus);
+
+                            if ((*display_it)->logical_gpu_index() == Display::INVALID_LOGICAL_GPU_INDEX) {
+                                NvLogicalGpuHandle logical_gpu_handle = 0;
+
+                                if (NvAPI_GetLogicalGPUFromDisplay(display_handle, &logical_gpu_handle) != NVAPI_OK) {
+                                    throw std::runtime_error("Failed to get logical GPU handle!");
+                                }
+
+                                const auto logical_gpu_handle_it = std::find(std::begin(logical_gpu_handles), std::end(logical_gpu_handles), logical_gpu_handle);
+
+                                if (logical_gpu_handle_it == std::end(logical_gpu_handles)) {
+                                    throw std::runtime_error("Failed to find logical GPU index!");
+                                }
+
+                                const size_t logical_gpu_index = std::distance(std::begin(logical_gpu_handles), logical_gpu_handle_it);
+                                (*display_it)->set_logical_gpu_index(logical_gpu_index, Display::LogicalGPUIndexSource::NVAPI);
+                            }
                         }
                     }
                 }
