@@ -1891,9 +1891,10 @@ main(int argc, const char* argv[])
 {
     std::cout << "vmi-player - Copyright (c) 2019 MINE ONE IP Inc." << std::endl;
 
-    bool enable_wrapper = false;
-    bool always_use_openvr_display = false;
+    bool enable_wrapper = true;
+    bool always_use_openvr = false;
     bool always_use_openvr_compositor = false;
+    bool always_use_openvr_pose = false;
 
     for (int arg_index = 1; arg_index < argc; ++arg_index) {
         if ((!strcmp(argv[arg_index], "-?")) || (!strcmp(argv[arg_index], "--help"))) {
@@ -1901,17 +1902,23 @@ main(int argc, const char* argv[])
             std::cout << "\t-h/--help                     Show command line options." << std::endl;
             std::cout << "\t--enable-wrapper              Use the wrapper library for present for display." << std::endl;
             std::cout << "\t--force-openvr                If both a Mosaic and OpenVR display were identified, use the OpenVR display." << std::endl;
-            std::cout << "\t--force-openvr-compositor     Use the OpenVR compositor in extended mode instead of a separate window." << std::endl;
+            std::cout << "\t--force-openvr-compositor     Use the OpenVR compositor in extended mode instead of a separate window (implies --force-openvr)." << std::endl;
+            std::cout << "\t--force-openvr-pose           Use the OpenVR HMD pose even if the wrapper is enabled (implies --force-openvr)." << std::endl;
             return EXIT_SUCCESS;
         }
         else if (!strcmp(argv[arg_index], "--enable-wrapper")) {
             enable_wrapper = true;
         }
         else if (!strcmp(argv[arg_index], "--force-openvr")) {
-            always_use_openvr_display = true;
+            always_use_openvr = true;
         }
         else if (!strcmp(argv[arg_index], "--force-openvr-compositor")) {
+            always_use_openvr = true;
             always_use_openvr_compositor = true;
+        }
+        else if (!strcmp(argv[arg_index], "--force-openvr-pose")) {
+            always_use_openvr = true;
+            always_use_openvr_pose = true;
         }
     }
 
@@ -2034,7 +2041,7 @@ main(int argc, const char* argv[])
             pixel_format_desc.cColorBits = 24;
         };
 
-        if (display_configuration.openvr_display() && (always_use_openvr_display || !display_configuration.mosaic_display())) {
+        if (display_configuration.openvr_display() && (always_use_openvr || !display_configuration.mosaic_display())) {
             stereo_display = display_configuration.openvr_display();
 
             if (!display_configuration.openvr_display_in_direct_mode()) {
