@@ -1583,6 +1583,7 @@ main(int argc, char* argv[])
 
         //------------------------------------------------------------------------------
         // Run loop.
+        glfwSwapInterval(4);
         double time = 0.0;
 
         while (!glfwWindowShouldClose(control_window)) {
@@ -1597,7 +1598,7 @@ main(int argc, char* argv[])
             // Handle events for all windows.
             glfwPollEvents();
 
-            time += (1.0 / 30.0);
+            time += (1.0 / 15.0);
             time = fmod(time, 1.0);
         }
 
