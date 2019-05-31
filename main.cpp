@@ -398,7 +398,7 @@ namespace {
                 std::cerr << "Exception: " << e.what() << std::endl;
             }
             catch (...) {
-                std::cerr << "Exception: <unknown>!" << std::endl;
+                std::cerr << "Failed to enumerate mosaics: Unknown exception!" << std::endl;
             }
 
             glm::uvec2 vr_render_resolution = glm::uvec2(0, 0);
@@ -1365,7 +1365,7 @@ namespace {
                 std::cerr << "Exception: " << e.what() << std::endl;
             }
             catch (...) {
-                std::cerr << "Exception: <unknown>!" << std::endl;
+                std::cerr << "Faile to load program: Unknown exception!" << std::endl;
             }
 
             return 0;
@@ -1872,7 +1872,7 @@ namespace {
             std::cerr << "Exception: " << e.what() << std::endl;
         }
         catch (...) {
-            std::cerr << "Exception: <unknown>!" << std::endl;
+            std::cerr << "Faile to terminate render thread: Unknown exception!" << std::endl;
         }
     }
 
@@ -2068,7 +2068,7 @@ main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
     catch (...) {
-        std::cerr << "Exception: <unknown>!" << std::endl;
+        std::cerr << "Application failed: Unknown exception!" << std::endl;
         return EXIT_FAILURE;
     }
 
