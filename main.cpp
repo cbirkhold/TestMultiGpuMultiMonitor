@@ -300,6 +300,7 @@ namespace {
         Display(std::string name, const rect_t& virtual_screen_rect)
             : m_name(std::move(name))
             , m_virtual_screen_rect(virtual_screen_rect)
+            , m_render_resolution(virtual_screen_rect.m_width, virtual_screen_rect.m_height)
         {
             if (m_name.empty()) {
                 throw std::runtime_error("Valid name expected!");
@@ -326,6 +327,9 @@ namespace {
 
         const std::string& name() const noexcept { return m_name; }
         const rect_t& virtual_screen_rect() const noexcept { return m_virtual_screen_rect; }
+
+        glm::uvec2 render_resolution() const noexcept { return m_render_resolution; }
+        void set_render_resolution(glm::uvec2 render_resolution) { m_render_resolution = render_resolution; }
 
         size_t refresh_rate() const noexcept { return m_refresh_rate; }
         void set_refresh_rate(size_t refresh_rate) { m_refresh_rate = refresh_rate; }
@@ -361,6 +365,7 @@ namespace {
         const std::string       m_name;
         const rect_t            m_virtual_screen_rect;
         
+        glm::uvec2              m_render_resolution = { 0, 0 };
         size_t                  m_refresh_rate = 0;
         size_t                  m_logical_gpu_index = INVALID_LOGICAL_GPU_INDEX;
 
@@ -396,7 +401,8 @@ namespace {
                 std::cerr << "Exception: <unknown>!" << std::endl;
             }
 
-            const rect_t vr_virtual_screen_rect = identify_openvr_display();
+            glm::uvec2 vr_render_resolution = glm::uvec2(0, 0);
+            const rect_t vr_virtual_screen_rect = identify_openvr_display(vr_render_resolution);
 
             //------------------------------------------------------------------------------
             // Select displays.
@@ -419,6 +425,7 @@ namespace {
                 else if ((display->virtual_screen_rect().m_width == vr_virtual_screen_rect.m_width) && (display->virtual_screen_rect().m_height == vr_virtual_screen_rect.m_height)) {
                     assert(!m_openvr_display);
                     m_openvr_display = display;
+                    m_openvr_display->set_render_resolution(vr_render_resolution);
                 }
             }
 
@@ -791,7 +798,7 @@ namespace {
 
         //------------------------------------------------------------------------------
         // Detect OpenVR HMD.
-        rect_t identify_openvr_display()
+        rect_t identify_openvr_display(glm::uvec2& render_resolution)
         {
             assert(m_primary_display);  // Call enum_displays() first!
 
@@ -825,10 +832,8 @@ namespace {
                     vr_extended_display->GetWindowBounds(&x, &y, &w, &h);
                     std::cout << "OpenVR window bounds: " << x << ", " << y << ", " << w << ", " << h << std::endl;
 
-                    virtual_screen_rect.m_x = x;
-                    virtual_screen_rect.m_y = y;
-                    virtual_screen_rect.m_width = w;
-                    virtual_screen_rect.m_height = h;
+                    virtual_screen_rect = rect_t(x, y, w, h);
+                    render_resolution = glm::uvec2(w, h);
 
                     for (size_t i = 0; i < 2; ++i) {
                         uint32_t x = 0;
@@ -840,12 +845,18 @@ namespace {
                 }
             }
             else {
+                uint32_t width = 0;
+                uint32_t height = 0;
+
+                vr_system->GetRecommendedRenderTargetSize(&width, &height);
+
                 //------------------------------------------------------------------------------
                 // OpenVR demands that the HMD is attached to the same GPU as the primary
                 // display (if this is not the case the SteamVR will notify the user). Set the
                 // direct mode flag to indicate that the OpenVR display identifies the primary
                 // display as opposed to the extended display scanned out to the HMD.
                 virtual_screen_rect = m_primary_display->virtual_screen_rect();
+                render_resolution = glm::uvec2(width, height);
                 m_is_openvr_display_in_direct_mode = true;
 
 #ifndef NDEBUG
@@ -1762,8 +1773,8 @@ namespace {
             // Combine into stereo display window.
             if (stereo_display_window) {
                 const HDC stereo_display_dc = GetDC(stereo_display_window);
-                const size_t width = stereo_display->virtual_screen_rect().m_width;//GetDeviceCaps(stereo_display_dc, HORZRES);
-                const size_t height = stereo_display->virtual_screen_rect().m_height;//GetDeviceCaps(stereo_display_dc, VERTRES);
+                const size_t width = stereo_display->render_resolution().x;//GetDeviceCaps(stereo_display_dc, HORZRES);
+                const size_t height = stereo_display->render_resolution().y;//GetDeviceCaps(stereo_display_dc, VERTRES);
 
                 if (wglMakeCurrent(stereo_display_dc, primary_gl_context)) {
                     glBlitNamedFramebuffer(
