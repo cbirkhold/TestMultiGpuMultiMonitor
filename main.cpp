@@ -1864,6 +1864,10 @@ namespace {
     
     void terminate_render_thread()
     {
+        if (!render_thread.valid()) {
+            return;
+        }
+
         try {
             exit_render_thread = true;
             render_thread.get();
