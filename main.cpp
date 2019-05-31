@@ -102,8 +102,6 @@ namespace {
 
     constexpr char GLSL_VERSION[] = "#version 450";
 
-    constexpr bool USE_OPENVR_COMPOSITOR_IN_EXTENDED_MODE = true;
-
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
@@ -1889,9 +1887,33 @@ namespace {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int
-main(int argc, char* argv[])
+main(int argc, const char* argv[])
 {
-    bool ALWAYS_USE_OPENVR_HMD_WHEN_AVAILABLE = true;
+    std::cout << "vmi-player - Copyright (c) 2019 MINE ONE IP Inc." << std::endl;
+
+    bool enable_wrapper = false;
+    bool always_use_openvr_display = false;
+    bool always_use_openvr_compositor = false;
+
+    for (int arg_index = 1; arg_index < argc; ++arg_index) {
+        if ((!strcmp(argv[arg_index], "-?")) || (!strcmp(argv[arg_index], "--help"))) {
+            std::cout << std::endl;
+            std::cout << "\t-h/--help                     Show command line options." << std::endl;
+            std::cout << "\t--enable-wrapper              Use the wrapper library for present for display." << std::endl;
+            std::cout << "\t--force-openvr                If both a Mosaic and OpenVR display were identified, use the OpenVR display." << std::endl;
+            std::cout << "\t--force-openvr-compositor     Use the OpenVR compositor in extended mode instead of a separate window." << std::endl;
+            return EXIT_SUCCESS;
+        }
+        else if (!strcmp(argv[arg_index], "--enable-wrapper")) {
+            enable_wrapper = true;
+        }
+        else if (!strcmp(argv[arg_index], "--force-openvr")) {
+            always_use_openvr_display = true;
+        }
+        else if (!strcmp(argv[arg_index], "--force-openvr-compositor")) {
+            always_use_openvr_compositor = true;
+        }
+    }
 
     //------------------------------------------------------------------------------
     // Initialize NVAPI.
@@ -2012,11 +2034,11 @@ main(int argc, char* argv[])
             pixel_format_desc.cColorBits = 24;
         };
 
-        if (display_configuration.openvr_display() && (ALWAYS_USE_OPENVR_HMD_WHEN_AVAILABLE || !display_configuration.mosaic_display())) {
+        if (display_configuration.openvr_display() && (always_use_openvr_display || !display_configuration.mosaic_display())) {
             stereo_display = display_configuration.openvr_display();
 
             if (!display_configuration.openvr_display_in_direct_mode()) {
-                if (!USE_OPENVR_COMPOSITOR_IN_EXTENDED_MODE) {
+                if (!always_use_openvr_compositor) {
                     stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
                 }
 
@@ -2024,7 +2046,7 @@ main(int argc, char* argv[])
                 // If the HMD is not in direct mode and we are using our own 'fullscreen' window
                 // move the OpenVR compositor window out of the way else bring it to the front.
                 if (vr_compositor) {
-                    if (USE_OPENVR_COMPOSITOR_IN_EXTENDED_MODE) {
+                    if (always_use_openvr_compositor) {
                         vr_compositor->CompositorBringToFront();
                     }
                     else {
