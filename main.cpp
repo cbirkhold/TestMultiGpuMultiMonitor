@@ -1407,6 +1407,12 @@ namespace {
     constexpr size_t PRIMARY_CONTEXT_INDEX = 0;
     constexpr size_t SUPPORT_CONTEXT_INDEX = 1;
 
+
+    bool enable_wrapper = false;
+    bool always_use_openvr = false;
+    bool always_use_openvr_compositor = false;
+    bool always_use_openvr_pose = false;
+    bool always_use_openvr_submit = false;
     std::shared_ptr<Display> stereo_display;
     HWND stereo_display_window = nullptr;
 
@@ -1886,11 +1892,6 @@ namespace {
 int
 main(int argc, const char* argv[])
 {
-
-    bool enable_wrapper = true;
-    bool always_use_openvr = false;
-    bool always_use_openvr_compositor = false;
-    bool always_use_openvr_pose = false;
     std::cout << "vmi-player - Copyright (c) 2019 Mine One GmbH d.b.a ViewMagic. All rights reserved." << std::endl;
 
     for (int arg_index = 1; arg_index < argc; ++arg_index) {
@@ -1898,9 +1899,10 @@ main(int argc, const char* argv[])
             std::cout << std::endl;
             std::cout << "\t-h/--help                     Show command line options." << std::endl;
             std::cout << "\t--enable-wrapper              Use the wrapper library for present for display." << std::endl;
-            std::cout << "\t--force-openvr                If both a Mosaic and OpenVR display were identified, use the OpenVR display." << std::endl;
+            std::cout << "\t--force-openvr                Use the OpenVR display even if a Mosaic display is also available." << std::endl;
             std::cout << "\t--force-openvr-compositor     Use the OpenVR compositor in extended mode instead of a separate window (implies --force-openvr)." << std::endl;
             std::cout << "\t--force-openvr-pose           Use the OpenVR HMD pose even if the wrapper is enabled (implies --force-openvr)." << std::endl;
+            std::cout << "\t--force-openvr-submit         Use the OpenVR compositor to submit frames even if the wrapper is enabled (implies ---force-openvr-compositor)." << std::endl;
             return EXIT_SUCCESS;
         }
         else if (!strcmp(argv[arg_index], "--enable-wrapper")) {
