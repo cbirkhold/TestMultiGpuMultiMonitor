@@ -440,7 +440,7 @@ namespace {
             if (!m_control_display) {
                 for (const auto& display : m_displays) {
                     if ((display != m_mosaic_display) && ((display != m_openvr_display) || m_is_openvr_display_in_direct_mode)) {
-                        std::cout << "Warning: Control display is on same GPU as Mosaic/OpenVR display!" << std::endl;
+                        std::cout << "Warning: Control display is on same GPU as a Mosaic/OpenVR display!" << std::endl;
                         m_control_display = display;
                         break;
                     }
@@ -1886,12 +1886,12 @@ namespace {
 int
 main(int argc, const char* argv[])
 {
-    std::cout << "vmi-player - Copyright (c) 2019 MINE ONE IP Inc." << std::endl;
 
     bool enable_wrapper = true;
     bool always_use_openvr = false;
     bool always_use_openvr_compositor = false;
     bool always_use_openvr_pose = false;
+    std::cout << "vmi-player - Copyright (c) 2019 Mine One GmbH d.b.a ViewMagic. All rights reserved." << std::endl;
 
     for (int arg_index = 1; arg_index < argc; ++arg_index) {
         if ((!strcmp(argv[arg_index], "-?")) || (!strcmp(argv[arg_index], "--help"))) {
