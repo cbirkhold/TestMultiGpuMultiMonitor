@@ -803,10 +803,6 @@ namespace {
 
             rect_t virtual_screen_rect;
 
-            if (!vr::VR_IsHmdPresent()) {
-                return virtual_screen_rect;
-            }
-
             vr::IVRSystem* const vr_system = vr::VRSystem();
 
             if (!vr_system) {
