@@ -1929,14 +1929,18 @@ main(int argc, const char* argv[])
             always_use_openvr = true;
         }
         else if (!strcmp(argv[arg_index], "--force-openvr-compositor")) {
-            always_use_openvr = true;
             always_use_openvr_compositor = true;
         }
         else if (!strcmp(argv[arg_index], "--force-openvr-pose")) {
-            always_use_openvr = true;
             always_use_openvr_pose = true;
         }
+        else if (!strcmp(argv[arg_index], "--force-openvr-submit")) {
+            always_use_openvr_submit = true;
+        }
     }
+
+    always_use_openvr_compositor |= (always_use_openvr_submit);
+    always_use_openvr |= (always_use_openvr_compositor | always_use_openvr_pose | always_use_openvr_submit);
 
     //------------------------------------------------------------------------------
     // Initialize NVAPI.
