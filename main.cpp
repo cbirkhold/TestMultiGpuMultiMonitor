@@ -851,7 +851,7 @@ namespace {
                 // direct mode flag to indicate that the OpenVR display identifies the primary
                 // display as opposed to the extended display scanned out to the HMD.
                 virtual_screen_rect = m_primary_display->virtual_screen_rect();
-                render_resolution = glm::uvec2(width, height);
+                render_resolution = glm::uvec2((width * 2), height);
                 m_is_openvr_display_in_direct_mode = true;
 
 #ifndef NDEBUG
