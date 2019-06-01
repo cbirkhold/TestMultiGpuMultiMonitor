@@ -93,7 +93,7 @@ namespace {
     constexpr size_t NUM_EYES = 2;
 
     constexpr int GL_CONTEXT_VERSION_MAJOR = 4;
-    constexpr int GL_CONTEXT_VERSION_MINOR = 5;
+    constexpr int GL_CONTEXT_VERSION_MINOR = 6;
 
 #ifndef NDEBUG
     constexpr int GL_OPENGL_DEBUG_CONTEXT = GLFW_TRUE;
