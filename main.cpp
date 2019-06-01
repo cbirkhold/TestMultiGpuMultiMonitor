@@ -1274,12 +1274,17 @@ namespace {
     void create_texture_backed_render_targets(
         GLuint* const framebuffers,
         GLuint* const color_attachments,
+        GLuint* const depth_attachments,
         size_t n,
         size_t width,
         size_t height)
     {
         glGenFramebuffers(GLsizei(n), framebuffers);
         glGenTextures(GLsizei(n), color_attachments);
+
+        if (depth_attachments) {
+            glGenRenderbuffers(GLsizei(n), depth_attachments);
+        }
 
         for (size_t i = 0; i < n; ++i) {
             glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[i]);
@@ -1291,6 +1296,12 @@ namespace {
 
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(width), GLsizei(height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_attachments[i], 0);
+
+            if (depth_attachments) {
+                glBindRenderbuffer(GL_RENDERBUFFER, depth_attachments[i]);
+                glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH32F_STENCIL8, GLsizei(width), GLsizei(height));
+                glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_attachments[i]);
+            }
 
             const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
 
@@ -1427,6 +1438,10 @@ namespace {
     GLuint support_framebuffer_copy = 0;
     GLuint support_color_attachment_copy = 0;
 
+    GLuint openvr_compositor_framebuffer = 0;
+    GLuint openvr_compositor_color_attachment = 0;
+    GLuint openvr_compositor_depth_attachment = 0;
+
     GLuint render_points_programs[2] = {};
     GLuint render_points_vao[2] = {};
 
@@ -1451,7 +1466,7 @@ namespace {
 
         gl_init_debug_messages();
 
-        create_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        create_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
         render_points_programs[SUPPORT_CONTEXT_INDEX] = RenderPoints::create_program();
 
         //------------------------------------------------------------------------------
@@ -1464,8 +1479,10 @@ namespace {
 
         gl_init_debug_messages();
 
-        create_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-        create_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        create_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        create_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        create_texture_backed_render_targets(&openvr_compositor_framebuffer, &openvr_compositor_color_attachment, &openvr_compositor_depth_attachment, 1, stereo_display->render_resolution().x, stereo_display->render_resolution().y);
+
         render_points_programs[PRIMARY_CONTEXT_INDEX] = RenderPoints::create_program();
     }
 
