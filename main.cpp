@@ -1418,12 +1418,16 @@ namespace {
     constexpr size_t PRIMARY_CONTEXT_INDEX = 0;
     constexpr size_t SUPPORT_CONTEXT_INDEX = 1;
 
+    constexpr float DEFAULT_IPD = 65.0f;
 
     bool enable_wrapper = false;
     bool always_use_openvr = false;
     bool always_use_openvr_compositor = false;
     bool always_use_openvr_pose = false;
     bool always_use_openvr_submit = false;
+
+    std::unique_ptr<HWW::HWWrapper> wrapper;
+
     std::shared_ptr<Display> stereo_display;
     HWND stereo_display_window = nullptr;
 
@@ -1505,79 +1509,43 @@ namespace {
     void render_loop()
     {
         //------------------------------------------------------------------------------
-        // Grab OpenVR system/compositor.
-        vr::IVRSystem* const vr_system = vr::VRSystem();
-        vr::IVRCompositor* const vr_compositor = vr::VRCompositor();
+        // Grab OpenVR system/compositor if we don't have a wrapper or are using any
+        // component of OpenVR alongside/width the wrapper.
+        vr::IVRSystem* vr_system = nullptr;
+        vr::IVRCompositor* vr_compositor = nullptr;
 
-        if (!vr_system || !vr_compositor) {
-            throw std::runtime_error("Valid OpenVR compositor expected!");
+        if (!wrapper || !stereo_display_window || always_use_openvr_pose) {
+            vr_system = vr::VRSystem();
+            vr_compositor = vr::VRCompositor();
+
+            if (!vr_system || !vr_compositor) {
+                throw std::runtime_error("Valid OpenVR system/compositor expected!");
+            }
         }
 
         //------------------------------------------------------------------------------
-        // Grab per-eye projection matrices (these are constant per device).
+        // Evaluate initial eye projection matrices. This can either come from the
+        // wrapper or directly from OpenVR.
+        constexpr float near_z = 0.1f;
+        constexpr float far_z = 32.0f;
+
         glm::mat4 projection_matrices[2] = { glm::mat4(1.0), glm::mat4(1.0) };
-        glm::vec4 clipping_planes[2] = { glm::vec4(0.0), glm::vec4(0.0) };
 
-        if (vr_system) {
-            constexpr float near_z = 0.1f;
-            constexpr float far_z = 100.0f;
-
+        if (!wrapper || always_use_openvr_pose) {
             for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
                 projection_matrices[eye_index] = glm_from_hmd_matrix(vr_system->GetProjectionMatrix(vr::EVREye(eye_index), near_z, far_z));
-                vr_system->GetProjectionRaw(vr::EVREye(eye_index), &clipping_planes[eye_index].x, &clipping_planes[eye_index].y, &clipping_planes[eye_index].z, &clipping_planes[eye_index].w);
-
-                printf("%s eye projection matrix:\n\t%f\t%f\t%f\t%f\n\t%f\t%f\t%f\t%f\n\t%f\t%f\t%f\t%f\n\t%f\t%f\t%f\t%f\n",
-                    (eye_index == vr::Eye_Left ? "Left" : "Right"),
-                    projection_matrices[eye_index][0].x, projection_matrices[eye_index][1].x, projection_matrices[eye_index][2].x, projection_matrices[eye_index][3].x,
-                    projection_matrices[eye_index][0].y, projection_matrices[eye_index][1].y, projection_matrices[eye_index][2].y, projection_matrices[eye_index][3].y,
-                    projection_matrices[eye_index][0].z, projection_matrices[eye_index][1].z, projection_matrices[eye_index][2].z, projection_matrices[eye_index][3].z,
-                    projection_matrices[eye_index][0].w, projection_matrices[eye_index][1].w, projection_matrices[eye_index][2].w, projection_matrices[eye_index][3].w);
-
-                printf("%s eye clipping planes:\n\t%f\t%f\t%f\t%f\n",
-                    (eye_index == vr::Eye_Left ? "Left" : "Right"),
-                    clipping_planes[eye_index].x, clipping_planes[eye_index].y, clipping_planes[eye_index].z, clipping_planes[eye_index].w);
+                projection_matrices[eye_index] *= glm::inverse(glm_from_hmd_matrix(vr_system->GetEyeToHeadTransform(vr::EVREye(eye_index))));
             }
         }
-
-        //------------------------------------------------------------------------------
-        // Optionally initialize render targets/attachments for debugging.
-        if ((1)) {
-            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
-                throw std::runtime_error("Failed to make OpenGL context current!");
-            }
-
-            glBindFramebuffer(GL_FRAMEBUFFER, primary_framebuffer);
-            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-            glDisable(GL_SCISSOR_TEST);
-
-            glClearColor(0.25, 1.0, 1.0, 1.0);
-            glClear(GL_COLOR_BUFFER_BIT);
-
-            glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer_copy);
-            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-            glDisable(GL_SCISSOR_TEST);
-
-            glClearColor(1.0, 0.25, 1.0, 1.0);
-            glClear(GL_COLOR_BUFFER_BIT);
-
-            if (!wglMakeCurrent(support_dc, support_gl_context)) {
-                throw std::runtime_error("Failed to make OpenGL context current!");
-            }
-
-            glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer);
-            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-            glDisable(GL_SCISSOR_TEST);
-
-            glClearColor(1.0, 1.0, 0.25, 1.0);
-            glClear(GL_COLOR_BUFFER_BIT);
+        else {
+            projection_matrices[0] = wrapper->GetLeftEyeTransformationMatrix(near_z, far_z);
+            projection_matrices[1] = wrapper->GetRightEyeTransformationMatrix(near_z, far_z);
         }
 
         //------------------------------------------------------------------------------
         // Render loop.
-        std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> render_poses;
         glm::vec4 prev_eye_to_head_translation[NUM_EYES] = {};
         glm::mat4 hmd_pose(1.0);
-        float hmd_ipd = 0.0;
 
         double time = 0.0;
 
@@ -1585,45 +1553,10 @@ namespace {
             double seconds = 0.0;
             const double fraction = modf(time, &seconds);
 
-            glm::mat4 eye_to_head_transforms[2] = { glm::mat4(1.0), glm::mat4(1.0) };
-            glm::mat4 eye_transforms[2] = { glm::mat4(1.0), glm::mat4(1.0) };
-
             //------------------------------------------------------------------------------
-            // If OpenVR is used, sychronize with display.
-            if (!stereo_display_window) {
-                //------------------------------------------------------------------------------
-                // Grab per-eye transform matrices (these may change at runtime with the IPD).
-                if (vr_system) {
-                    for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
-                        eye_to_head_transforms[eye_index] = glm_from_hmd_matrix(vr_system->GetEyeToHeadTransform(vr::EVREye(eye_index)));
-                    }
-                }
-
-                //------------------------------------------------------------------------------
-                // Update IPD.
-                bool ipd_changed = false;
-
-                for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
-                    if (eye_to_head_transforms[eye_index][3] != prev_eye_to_head_translation[eye_index]) {
-                        ipd_changed = true;
-                    }
-
-                    prev_eye_to_head_translation[eye_index] = eye_to_head_transforms[eye_index][3];
-                }
-
-                if (ipd_changed) {
-                    const float ipd = (fabsf(prev_eye_to_head_translation[0].x - prev_eye_to_head_translation[1].x) * 1000.0f);
-                    hmd_ipd = ipd;
-
-                    std::cout << "IPD changed to " << ipd << " [mm]" << std::endl;
-                }
-
-                for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
-                    eye_transforms[eye_index] = ((projection_matrices[eye_index] * glm::inverse(eye_to_head_transforms[eye_index])) * glm::inverse(hmd_pose));
-                }
-
-                //------------------------------------------------------------------------------
-                // Read pose information.
+            // Read pose information either from the wrapper or directly from OpenVR.
+            if (!wrapper || always_use_openvr_pose) {
+                std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> render_poses;
                 vr_compositor->WaitGetPoses(render_poses.data(), uint32_t(render_poses.size()), nullptr, 0);
 
                 for (size_t tracked_device_index = 0; tracked_device_index < render_poses.size(); ++tracked_device_index) {
@@ -1639,7 +1572,60 @@ namespace {
 
                     if (tracked_device_index == vr::k_unTrackedDeviceIndex_Hmd) {
                         hmd_pose = glm_from_hmd_matrix(render_pose.mDeviceToAbsoluteTracking);
+                        break;
                     }
+                }
+
+                //------------------------------------------------------------------------------
+                // Grab per-eye transform matrices (these may change at runtime with the IPD)
+                // and update the eye projection matrices accordingly.
+                glm::mat4 eye_to_head_transforms[2] = { glm::mat4(1.0), glm::mat4(1.0) };
+                bool ipd_changed = false;
+
+                for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
+                    eye_to_head_transforms[eye_index] = glm_from_hmd_matrix(vr_system->GetEyeToHeadTransform(vr::EVREye(eye_index)));
+
+                    if (eye_to_head_transforms[eye_index][3] != prev_eye_to_head_translation[eye_index]) {
+                        ipd_changed = true;
+                    }
+
+                    projection_matrices[eye_index] = glm_from_hmd_matrix(vr_system->GetProjectionMatrix(vr::EVREye(eye_index), near_z, far_z));
+                    projection_matrices[eye_index] *= glm::inverse(eye_to_head_transforms[eye_index]);
+
+                    prev_eye_to_head_translation[eye_index] = eye_to_head_transforms[eye_index][3];
+                }
+
+                //------------------------------------------------------------------------------
+                // Update IPD if it has changed.
+                if (ipd_changed) {
+                    const float ipd = (fabsf(prev_eye_to_head_translation[0].x - prev_eye_to_head_translation[1].x) * 1000.0f);
+                    std::cout << "IPD changed to " << ipd << " [mm]" << std::endl;
+
+                    if (wrapper) {
+                        wrapper->SetIPD(ipd);
+                        projection_matrices[0] = wrapper->GetLeftEyeTransformationMatrix(near_z, far_z);
+                        projection_matrices[1] = wrapper->GetRightEyeTransformationMatrix(near_z, far_z);
+                    }
+                }
+            }
+            else {
+                //------------------------------------------------------------------------------
+                // If the wrapper is used but we are using the OpenVR compositor for eye
+                // texture submission we need to call WaitGetPoses() to keep the app 'active'.
+                if (!stereo_display_window) {
+                    vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
+                }
+
+                //------------------------------------------------------------------------------
+                // Get pose from wrapper.
+                glm::vec3 hmd_position;
+                glm::quat hmd_orientation;
+
+                if (wrapper->GetHMDPose(hmd_position, hmd_orientation)) {
+                    const glm::mat4 hmd_rotation = glm::mat4_cast(glm::normalize(hmd_orientation));
+                    const glm::mat4 hmd_translation = glm::translate(glm::mat4(1.0), hmd_position);
+
+                    hmd_pose = (glm::inverse(hmd_rotation) * glm::inverse(hmd_translation));
                 }
             }
 
@@ -1665,7 +1651,7 @@ namespace {
                 pose[3] = hmd_pose[3];
                 pose[3].z -= 1.0;
 
-                const glm::mat4 mvp = (((projection_matrices[0] * glm::inverse(eye_to_head_transforms[0])) * glm::inverse(hmd_pose)) * pose);
+                const glm::mat4 mvp = ((projection_matrices[0] * glm::inverse(hmd_pose)) * pose);
                 RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
 
                 for (size_t i = 0; i < 80; ++i) {
@@ -1741,7 +1727,7 @@ namespace {
                 pose[3] = hmd_pose[3];
                 pose[3].z -= 1.0;
 
-                const glm::mat4 mvp = (((projection_matrices[1] * glm::inverse(eye_to_head_transforms[1])) * glm::inverse(hmd_pose)) * pose);
+                const glm::mat4 mvp = ((projection_matrices[1] * glm::inverse(hmd_pose)) * pose);
                 RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
 
                 for (size_t i = 0; i < 40; ++i) {
@@ -1770,7 +1756,7 @@ namespace {
                     pose[3] = hmd_pose[3];
                     pose[3].z -= 1.0;
 
-                    const glm::mat4 mvp = (((projection_matrices[0] * glm::inverse(eye_to_head_transforms[0])) * glm::inverse(hmd_pose)) * pose);
+                    const glm::mat4 mvp = ((projection_matrices[0] * glm::inverse(hmd_pose)) * pose);
                     RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
 
                     for (size_t i = 0; i < 40; ++i) {
@@ -1788,61 +1774,137 @@ namespace {
             glWaitSync(support_context_complete, 0, GL_TIMEOUT_IGNORED);
 
             //------------------------------------------------------------------------------
-            // Combine into stereo display window.
+            // Combine into stereo display window or submit to the OpenVR compositor.
+            const size_t stereo_display_width = stereo_display->render_resolution().x;//GetDeviceCaps(stereo_display_dc, HORZRES);
+            const size_t stereo_display_height = stereo_display->render_resolution().y;//GetDeviceCaps(stereo_display_dc, VERTRES);
+
+            //------------------------------------------------------------------------------
+            // If a stereo display is present we are in OpenVR extended mode but are not
+            // using the OpenVR compositor/submit. Whichever way we process the output it
+            // must be rendered to the stereo display context and then swapped to display.
             if (stereo_display_window) {
                 const HDC stereo_display_dc = GetDC(stereo_display_window);
-                const size_t width = stereo_display->render_resolution().x;//GetDeviceCaps(stereo_display_dc, HORZRES);
-                const size_t height = stereo_display->render_resolution().y;//GetDeviceCaps(stereo_display_dc, VERTRES);
 
                 if (wglMakeCurrent(stereo_display_dc, primary_gl_context)) {
-                    glBlitNamedFramebuffer(
-                        support_framebuffer_copy, 0,
-                        0, 0, GLint(PER_GPU_PASS_FRAMEBUFFER_WIDTH), GLint(PER_GPU_PASS_FRAMEBUFFER_HEIGHT),
-                        0, 0, GLint(width / 2), GLint(height),
-                        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                    //------------------------------------------------------------------------------
+                    // If we are in extended mode without using the OpenVR compositor and also don't
+                    // have the wrapper available we can only blit the undistorted eye textures.
+                    if (!wrapper) {
+                        glBlitNamedFramebuffer(
+                            support_framebuffer_copy, 0,
+                            0, 0, GLint(PER_GPU_PASS_FRAMEBUFFER_WIDTH), GLint(PER_GPU_PASS_FRAMEBUFFER_HEIGHT),
+                            0, 0, GLint(stereo_display_width / 2), GLint(stereo_display_height),
+                            GL_COLOR_BUFFER_BIT, GL_LINEAR);
 
-                    glBlitNamedFramebuffer(
-                        primary_framebuffer, 0,
-                        0, 0, GLint(PER_GPU_PASS_FRAMEBUFFER_WIDTH), GLint(PER_GPU_PASS_FRAMEBUFFER_HEIGHT),
-                        GLint(width / 2), 0, GLint(width), GLint(height),
-                        GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                        glBlitNamedFramebuffer(
+                            primary_framebuffer, 0,
+                            0, 0, GLint(PER_GPU_PASS_FRAMEBUFFER_WIDTH), GLint(PER_GPU_PASS_FRAMEBUFFER_HEIGHT),
+                            GLint(stereo_display_width / 2), 0, GLint(stereo_display_width), GLint(stereo_display_height),
+                            GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                    }
+                    //------------------------------------------------------------------------------
+                    // Let the wrapper handle distortion/color.
+                    else {
+                        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                        glViewport(0, 0, GLsizei(stereo_display_width), GLsizei(stereo_display_height));
+                        glDisable(GL_SCISSOR_TEST);
 
+                        wrapper->Render(support_color_attachment_copy, primary_color_attachment, float(time));
+                    }
+
+                    //------------------------------------------------------------------------------
+                    // As we are rendering to a window we are responsible for swapping to display.
                     SwapBuffers(stereo_display_dc);
                 }
 
                 ReleaseDC(stereo_display_window, stereo_display_dc);
             }
+            //------------------------------------------------------------------------------
+            // If no stereo display is present we are using the OpenVR compositor to render
+            // in direct or extended mode, with or without using the wrapper.
             else {
-                vr::Texture_t eye_texture = {};
-                {
-                    eye_texture.eType = vr::TextureType_OpenGL;
-                    eye_texture.eColorSpace = vr::ColorSpace_Linear;
-                }
-
-                vr::VRTextureBounds_t bounds = {};
-                {
-                    bounds.uMin = 0.0;
-                    bounds.vMin = 0.0;
-                    bounds.uMax = 1.0;
-                    bounds.vMax = 1.0;
-                }
-
-                for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
-                    if (eye_index == vr::Eye_Left) {
-                        eye_texture.handle = reinterpret_cast<void*>(uintptr_t(support_color_attachment_copy));
-                    }
-                    else {
-                        eye_texture.handle = reinterpret_cast<void*>(uintptr_t(primary_color_attachment));
+                //------------------------------------------------------------------------------
+                // If we don't have the wrapper or are always using the OpenVR compositor to
+                // submit we pass undistorted eye textures to the compositor for processing.
+                if (!wrapper || always_use_openvr_submit) {
+                    vr::Texture_t eye_texture = {};
+                    {
+                        eye_texture.eType = vr::TextureType_OpenGL;
+                        eye_texture.eColorSpace = vr::ColorSpace_Linear;
                     }
 
-                    const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_texture, &bounds, vr::Submit_Default);
-
-                    if (error != vr::VRCompositorError_None) {
-                        std::cerr << "Error: " << error << std::endl;
+                    vr::VRTextureBounds_t bounds = {};
+                    {
+                        bounds.uMin = 0.0;
+                        bounds.vMin = 0.0;
+                        bounds.uMax = 1.0;
+                        bounds.vMax = 1.0;
                     }
-                }
 
-                glFlush();
+                    for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
+                        if (eye_index == vr::Eye_Left) {
+                            eye_texture.handle = reinterpret_cast<void*>(uintptr_t(support_color_attachment_copy));
+                        }
+                        else {
+                            eye_texture.handle = reinterpret_cast<void*>(uintptr_t(primary_color_attachment));
+                        }
+
+                        const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_texture, &bounds, vr::Submit_Default);
+
+                        if (error != vr::VRCompositorError_None) {
+                            std::cerr << "Error: " << error << std::endl;
+                        }
+                    }
+
+                    glFlush();
+                }
+                //------------------------------------------------------------------------------
+                // If we are using the wrapper but submit to display through the OpenVR
+                // compositor we first render into an intermediate framebuffer then submit
+                // distorted eye textures to OpenVR.
+                else {
+                    //------------------------------------------------------------------------------
+                    // Use wrapper to process distrotion/color.
+                    glBindFramebuffer(GL_FRAMEBUFFER, openvr_compositor_framebuffer);
+                    glViewport(0, 0, GLsizei(stereo_display_width), GLsizei(stereo_display_height));
+                    glDisable(GL_SCISSOR_TEST);
+
+                    wrapper->Render(support_color_attachment_copy, primary_color_attachment, float(time));
+
+                    //------------------------------------------------------------------------------
+                    // Submit pre-processed (distortion/color) eye textures to the OpenVR compositor.
+                    vr::Texture_t eye_texture = {};
+                    {
+                        eye_texture.handle = reinterpret_cast<void*>(uintptr_t(openvr_compositor_color_attachment));
+                        eye_texture.eType = vr::TextureType_OpenGL;
+                        eye_texture.eColorSpace = vr::ColorSpace_Gamma;
+                    }
+
+                    vr::VRTextureBounds_t bounds = {};
+                    {
+                        bounds.vMin = 0.0;
+                        bounds.vMax = 1.0;
+                    }
+
+                    for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
+                        if (eye_index == vr::Eye_Left) {
+                            bounds.uMin = 0.0;
+                            bounds.uMax = 0.5;
+                        }
+                        else {
+                            bounds.uMin = 0.5;
+                            bounds.uMax = 1.0;
+                        }
+
+                        const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_texture, &bounds, vr::Submit_LensDistortionAlreadyApplied);
+
+                        if (error != vr::VRCompositorError_None) {
+                            std::cerr << "Error: " << error << std::endl;
+                        }
+                    }
+
+                    glFlush();
+                }
             }
 
             time += (1.0 / 90.0);
@@ -1985,31 +2047,39 @@ main(int argc, const char* argv[])
     }
 
     //------------------------------------------------------------------------------
-    // Initialize OpenVR if available.
-    vr::IVRCompositor* vr_compositor = nullptr;
-
-    if (vr::VR_IsRuntimeInstalled()) {
+    // Initialize wrapper/OpenVR (required for identifying available display
+    // configurations below).
+    if (enable_wrapper) {
+        try {
+            wrapper.reset(new HWW::HWWrapper(argc, argv));
+        }
+        catch (std::exception& e) {
+            std::cerr << "Exception: " << e.what() << std::endl;
+            return EXIT_FAILURE;
+        }
+        catch (...) {
+            std::cerr << "Failed to initialize wrapper: Unknown exception!" << std::endl;
+            return EXIT_FAILURE;
+        }
+    }
+    else if (vr::VR_IsRuntimeInstalled() && vr::VR_IsHmdPresent()) {
         vr::EVRInitError error = vr::VRInitError_None;
-        vr::IVRSystem* vr_system = vr::VR_Init(&error, vr::VRApplication_Scene);
+        vr::IVRSystem* const vr_system = vr::VR_Init(&error, vr::VRApplication_Scene);
 
         if ((error != vr::VRInitError_None) || !vr_system) {
-            std::cerr << "Error: Failed to initialize VR system: " << error << ": " << vr::VR_GetVRInitErrorAsEnglishDescription(error) << std::endl;
+            std::cerr << "Error: Failed to initialize VR system: " << vr::VR_GetVRInitErrorAsEnglishDescription(error) << std::endl;
             return EXIT_FAILURE;
         }
 
         atexit([]() {
             vr::VR_Shutdown();
         });
-
-        //------------------------------------------------------------------------------
-        // Keep log a bit cleaner by giving the VR sytstem a chance to complete its
-        // asynchronous startup before we go on.
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-
-        //------------------------------------------------------------------------------
-        // Grab compositor for later use.
-        vr_compositor = vr::VRCompositor();
     }
+
+    //------------------------------------------------------------------------------
+    // Keep log a bit cleaner by giving the VR sytstem a chance to complete its
+    // asynchronous startup before we go on.
+    std::this_thread::sleep_for(std::chrono::seconds(2));
 
     //------------------------------------------------------------------------------
     // Application.
@@ -2072,6 +2142,8 @@ main(int argc, const char* argv[])
                 //------------------------------------------------------------------------------
                 // If the HMD is not in direct mode and we are using our own 'fullscreen' window
                 // move the OpenVR compositor window out of the way else bring it to the front.
+                vr::IVRCompositor* const vr_compositor = vr::VRCompositor();
+
                 if (vr_compositor) {
                     if (always_use_openvr_compositor) {
                         vr_compositor->CompositorBringToFront();
@@ -2088,6 +2160,31 @@ main(int argc, const char* argv[])
         }
 
         create_render_contexts(stereo_display, pixel_format_desc);
+
+        //------------------------------------------------------------------------------
+        // Initialize wrapper/OpenVR.
+        if (enable_wrapper) {
+            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
+                throw std::runtime_error("Failed to make OpenGL context current!");
+            }
+
+            try {
+                wrapper->Initialize();
+                wrapper->SetIPD(DEFAULT_IPD);
+                wrapper->SetTrackerPredictionTime(0.044f);
+                wrapper->SetViewportDimentions(stereo_display->render_resolution().x, stereo_display->render_resolution().y);
+            }
+            catch (std::exception& e) {
+                std::cerr << "Exception: " << e.what() << std::endl;
+                return EXIT_FAILURE;
+            }
+            catch (...) {
+                std::cerr << "Failed to initialize wrapper: Unknown exception!" << std::endl;
+                return EXIT_FAILURE;
+            }
+
+            glfwMakeContextCurrent(control_window);
+        }
 
         //------------------------------------------------------------------------------
         // Create render thread.
