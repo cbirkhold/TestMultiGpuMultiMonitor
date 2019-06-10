@@ -103,7 +103,7 @@ namespace {
     constexpr int GL_OPENGL_DEBUG_CONTEXT = GLFW_FALSE;
 #endif // NDEBUG
 
-    constexpr char GLSL_VERSION[] = "#version 450";
+    constexpr char GLSL_VERSION[] = "#version 460";
 
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
@@ -1403,7 +1403,7 @@ namespace {
         static GLuint create_program()
         {
             static const char* const vs_string =
-                "#version 410\n"
+                "#version 460\n"
                 "uniform vec4 u_rect;\n"
                 "uniform mat4 u_mvp;\n"
                 "out vec2 v_uv;\n"
@@ -1416,7 +1416,7 @@ namespace {
                 "}\n";
 
             static const char* const fs_string =
-                "#version 410\n"
+                "#version 460\n"
                 "in vec2 v_uv;\n"
                 "out vec4 f_color;\n"
                 "void main() {\n"
