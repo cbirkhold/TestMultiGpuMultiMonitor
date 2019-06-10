@@ -636,7 +636,7 @@ namespace {
                     });
 
                     if (display_it == end(m_displays)) {
-                        std::cout << "  Warning: DirectX enunmerates display " << display_name << " but Windows does not!" << std::endl;
+                        std::cout << "  Warning: DirectX enumerates display " << display_name << " but Windows does not!" << std::endl;
                     }
                     else {
                         if ((*display_it)->logical_gpu_index() == Display::INVALID_LOGICAL_GPU_INDEX) {
@@ -674,7 +674,7 @@ namespace {
                 NvAPI_ShortString display_name = {};
 
                 if (NvAPI_GetAssociatedNvidiaDisplayName(display_handle, display_name) != NVAPI_OK) {
-                    std::cout << "Warning: NVAPI enunmerates nameless display " << toolbox::StlUtils::hex_insert(display_handle, size_t(-1)) << "!" << std::endl;
+                    std::cout << "Warning: NVAPI enumerates nameless display " << toolbox::StlUtils::hex_insert(display_handle, size_t(-1)) << "!" << std::endl;
                     continue;
                 }
 
@@ -683,7 +683,7 @@ namespace {
                 });
 
                 if (display_it == end(m_displays)) {
-                    std::cout << "Warning: NVAPI enunmerates display " << display_name << " but Windows does not!" << std::endl;
+                    std::cout << "Warning: NVAPI enumerates display " << display_name << " but Windows does not!" << std::endl;
                     continue;
                 }
 
@@ -818,7 +818,7 @@ namespace {
                     });
 
                     if (it == end(m_displays)) {
-                        std::cout << "  Warning: NVAPI enunmerates display " << toolbox::StlUtils::hex_insert(display_id, size_t(-1)) << " but Windows does not!" << std::endl;
+                        std::cout << "  Warning: NVAPI enumerates display " << toolbox::StlUtils::hex_insert(display_id, size_t(-1)) << " but Windows does not!" << std::endl;
                     }
                     else {
                         (*it)->set_refresh_rate(display_grid.displaySettings.freq);
