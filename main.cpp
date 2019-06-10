@@ -2074,6 +2074,10 @@ main(int argc, const char* argv[])
         else if (!strcmp(argv[arg_index], "--force-openvr-submit")) {
             always_use_openvr_submit = true;
         }
+        else {
+            std::cerr << "Error: Invalid argument '" << argv[arg_index] << "'!" << std::endl;
+            return EXIT_FAILURE;
+        }
     }
 
     always_use_openvr_compositor |= (always_use_openvr_submit);
