@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.5)
 project(vmi-player)
 
-add_executable(vmi-player main.cpp OpenGLUtilities.cpp)
+add_executable(vmi-player main.cpp OpenGLUtilities.cpp CppUtilities.cpp)
 
 target_include_directories(vmi-player PRIVATE $ENV{CUDA_PATH}/include)
 target_include_directories(vmi-player PRIVATE sdks/glew/include)
