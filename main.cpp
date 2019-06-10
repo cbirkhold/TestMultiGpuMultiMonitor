@@ -13,6 +13,7 @@
 #include <future>
 #include <iostream>
 #include <iomanip>
+#include <set>
 #include <string>
 #include <vector>
 #include <thread>
@@ -76,6 +77,7 @@
 // Toolbox
 //------------------------------------------------------------------------------
 
+#include "CppUtilities.h"
 #include "OpenGLUtilities.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -150,16 +152,14 @@ namespace {
             for (size_t c = 0; c < display_grid.columns; ++c) {
                 const NvU32 display_id = display_grid.displays[c + (r * display_grid.columns)].displayId;
 
-                stream << indent << "[" << r << "," << c << "] 0x" << std::hex << std::setfill('0') << std::setw(8) << display_id << std::dec;
+                stream << indent << "[" << r << "," << c << "] " << toolbox::StlUtils::hex_insert(display_id, 8) << std::endl;
             }
         }
-
-        stream << std::endl;
     }
 
     void print_display_flags_to_stream(std::ostream& stream, DWORD flags)
     {
-        stream << "0x" << std::hex << std::setfill('0') << std::setw(8) << flags << std::dec;
+        stream << toolbox::StlUtils::hex_insert(flags, size_t(-1));
 
         if (flags != 0) {
             bool first = true;
@@ -353,9 +353,13 @@ namespace {
 
         friend std::ostream& operator<<(std::ostream& stream, const Display& display)
         {
-            stream << "Display: " << display.m_name << ", GPU=" << display.m_logical_gpu_index << ", (";
-            stream << display.m_virtual_screen_rect.m_x << ", " << display.m_virtual_screen_rect.m_y << "), " << display.m_virtual_screen_rect.m_width << " x " << display.m_virtual_screen_rect.m_height << " @ " << display.m_refresh_rate << ", ";
-            stream << "(id=" << display.m_nv_display_id << ", handle=" << display.m_nv_display_handle << ", num_pgpus=" << display.m_nv_num_physical_gpus << ", num_mosaic_displays=" << display.m_nv_mosaic_num_displays << ")";
+            stream << display.m_name << ", LGPU=" << display.m_logical_gpu_index << ", (";
+            stream << display.m_virtual_screen_rect.m_x << " / " << display.m_virtual_screen_rect.m_y << ") [";
+            stream << display.m_virtual_screen_rect.m_width << " x " << display.m_virtual_screen_rect.m_height << "] @ ";
+            stream << display.m_refresh_rate << " Hz, ";
+            stream << "(id=" << toolbox::StlUtils::hex_insert(display.m_nv_display_id, size_t(-1));
+            stream << ", handle=" << toolbox::StlUtils::hex_insert(display.m_nv_display_handle, size_t(-1));
+            stream << ", num_pgpus=" << display.m_nv_num_physical_gpus << ", num_mosaic_displays=" << display.m_nv_mosaic_num_displays << ")";
             return stream;
         }
 
@@ -405,16 +409,15 @@ namespace {
 
             //------------------------------------------------------------------------------
             // Select displays.
+            std::set<std::shared_ptr<Display>> assigned_displays;
+
             for (const auto& display : m_displays) {
                 const bool is_mosaic = display->valid_mosaic();
-
-#ifndef NDEBUG
-                std::cout << (*display) << std::endl;
-#endif // NDEBUG
 
                 if (is_mosaic) {
                     if (!m_mosaic_display || (display->nv_mosaic_num_displays() > m_mosaic_display->nv_mosaic_num_displays())) {
                         m_mosaic_display = display;
+                        assigned_displays.insert(display);
                     }
                 }
                 //------------------------------------------------------------------------------
@@ -425,25 +428,7 @@ namespace {
                     assert(!m_openvr_display);
                     m_openvr_display = display;
                     m_openvr_display->set_render_resolution(vr_render_resolution);
-                }
-            }
-
-            for (const auto& display : m_displays) {
-                if ((!m_mosaic_display || (display->logical_gpu_index() != m_mosaic_display->logical_gpu_index())) &&
-                    (!m_openvr_display || (display->logical_gpu_index() != m_openvr_display->logical_gpu_index())))
-                {
-                    m_control_display = display;
-                    break;
-                }
-            }
-
-            if (!m_control_display) {
-                for (const auto& display : m_displays) {
-                    if ((display != m_mosaic_display) && ((display != m_openvr_display) || m_is_openvr_display_in_direct_mode)) {
-                        std::cout << "Warning: Control display is on same GPU as a Mosaic/OpenVR display!" << std::endl;
-                        m_control_display = display;
-                        break;
-                    }
+                    assigned_displays.insert(display);
                 }
             }
 
@@ -451,8 +436,53 @@ namespace {
                 throw std::runtime_error("Expected a valid Mosaic or OpenVR display!");
             }
 
+            if (m_mosaic_display) {
+                std::cout << "Mosaic display: " << (*m_mosaic_display) << std::endl;
+            }
+
+            if (m_openvr_display) {
+                std::cout << "OpenVR display: " << (*m_openvr_display) << std::endl;
+            }
+
+            for (const auto& display : m_displays) {
+                if ((!m_mosaic_display || (display->logical_gpu_index() != m_mosaic_display->logical_gpu_index())) &&
+                    (!m_openvr_display || (display->logical_gpu_index() != m_openvr_display->logical_gpu_index())))
+                {
+                    m_control_display = display;
+                    assigned_displays.insert(display);
+                    break;
+                }
+            }
+
+            if (!m_control_display) {
+                for (const auto& display : m_displays) {
+                    if ((display != m_mosaic_display) && ((display != m_openvr_display) || m_is_openvr_display_in_direct_mode)) {
+                        m_control_display = display;
+                        assigned_displays.insert(display);
+                        break;
+                    }
+                }
+            }
+
             if (!m_control_display) {
                 throw std::runtime_error("Expected a valid control display!");
+            }
+
+            std::cout << "Control display: " << (*m_control_display) << std::endl;
+
+#ifndef NDEBUG
+            for (const auto& display : m_displays) {
+                if (assigned_displays.find(display) == end(assigned_displays)) {
+                    std::cout << "Unassigned display: " << (*display) << std::endl;
+                }
+            }
+#endif // NDEBUG
+
+            if (m_mosaic_display && (m_control_display->logical_gpu_index() == m_mosaic_display->logical_gpu_index())) {
+                std::cout << "Warning: Control display is on same GPU as the Mosaic display!" << std::endl;
+            }
+            else if (m_openvr_display && (m_control_display->logical_gpu_index() == m_openvr_display->logical_gpu_index())) {
+                std::cout << "Warning: Control display is on same GPU as the OpenVR display!" << std::endl;
             }
         }
 
@@ -515,13 +545,13 @@ namespace {
                     is_primary = ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) == MONITORINFOF_PRIMARY);
                 }
                 else {
-                    std::cout << "Monitor 0x" << monitor << ": ";
+                    std::cout << "Monitor 0x" << toolbox::StlUtils::hex_insert(monitor, size_t(-1));
                 }
 
                 std::cout << "(" << virtual_screen_rect.m_x << " / " << virtual_screen_rect.m_y << ") [" << virtual_screen_rect.m_width << " x " << virtual_screen_rect.m_height << "]";
 
                 if (is_primary) {
-                    std::cout << " (primary)";
+                    std::cout << " (primary display)";
                 }
 
                 if (display) {
@@ -575,8 +605,9 @@ namespace {
 
                 std::cout << "Adapter " << adapter_index << ": ";
                 std::wcout << adapter_desc.Description;
-                std::cout << ", 0x" << std::hex << adapter_desc.AdapterLuid.HighPart << std::setfill('0') << std::setw(8) << adapter_desc.AdapterLuid.LowPart << std::dec;
-                std::cout << std::endl;
+
+                const uint64_t luid = ((uint64_t(adapter_desc.AdapterLuid.HighPart) << (sizeof(adapter_desc.AdapterLuid.LowPart) * 8)) | adapter_desc.AdapterLuid.LowPart);
+                std::cout << ", " << toolbox::StlUtils::hex_insert(luid, size_t(-1)) << std::endl;
 
                 //------------------------------------------------------------------------------
                 // Enumerate outputs (displays).
@@ -605,7 +636,7 @@ namespace {
                     });
 
                     if (display_it == end(m_displays)) {
-                        std::cout << "DirectX enunmerates display " << display_name << " but Windows does not!" << std::endl;
+                        std::cout << "  Warning: DirectX enunmerates display " << display_name << " but Windows does not!" << std::endl;
                     }
                     else {
                         if ((*display_it)->logical_gpu_index() == Display::INVALID_LOGICAL_GPU_INDEX) {
@@ -638,53 +669,53 @@ namespace {
             }
 
             NvDisplayHandle display_handle = nullptr;
-            NvU32 display_index = 0;
 
-            while (NvAPI_EnumNvidiaDisplayHandle(display_index, &display_handle) == NVAPI_OK) {
+            for (NvU32 display_index = 0; NvAPI_EnumNvidiaDisplayHandle(display_index, &display_handle) == NVAPI_OK; ++display_index) {
                 NvAPI_ShortString display_name = {};
 
-                if (NvAPI_GetAssociatedNvidiaDisplayName(display_handle, display_name) == NVAPI_OK) {
-                    const auto display_it = std::find_if(begin(m_displays), end(m_displays), [display_name](const std::shared_ptr<Display>& display) {
-                        return (display->name() == display_name);
-                    });
-
-                    if (display_it == end(m_displays)) {
-                        std::cout << "NVAPI enunmerates display " << display_name << " but Windows does not!" << std::endl;
-                    }
-                    else {
-                        NvU32 display_id = 0;
-
-                        if (NvAPI_DISP_GetDisplayIdByDisplayName(display_name, &display_id) == NVAPI_OK) {
-                            NvPhysicalGpuHandle physical_gpus[NVAPI_MAX_PHYSICAL_GPUS] = {};
-                            NvU32 num_physical_gpus = 0;
-
-                            if (NvAPI_GetPhysicalGPUsFromDisplay(display_handle, physical_gpus, &num_physical_gpus) != NVAPI_OK) {
-                                throw std::runtime_error("Failed to get physical GPU count!");
-                            }
-
-                            (*display_it)->set_nv_display(display_id, display_handle, num_physical_gpus);
-
-                            if ((*display_it)->logical_gpu_index() == Display::INVALID_LOGICAL_GPU_INDEX) {
-                                NvLogicalGpuHandle logical_gpu_handle = 0;
-
-                                if (NvAPI_GetLogicalGPUFromDisplay(display_handle, &logical_gpu_handle) != NVAPI_OK) {
-                                    throw std::runtime_error("Failed to get logical GPU handle!");
-                                }
-
-                                const auto logical_gpu_handle_it = std::find(std::begin(logical_gpu_handles), std::end(logical_gpu_handles), logical_gpu_handle);
-
-                                if (logical_gpu_handle_it == std::end(logical_gpu_handles)) {
-                                    throw std::runtime_error("Failed to find logical GPU index!");
-                                }
-
-                                const size_t logical_gpu_index = std::distance(std::begin(logical_gpu_handles), logical_gpu_handle_it);
-                                (*display_it)->set_logical_gpu_index(logical_gpu_index, Display::LogicalGPUIndexSource::NVAPI);
-                            }
-                        }
-                    }
+                if (NvAPI_GetAssociatedNvidiaDisplayName(display_handle, display_name) != NVAPI_OK) {
+                    std::cout << "Warning: NVAPI enunmerates nameless display " << toolbox::StlUtils::hex_insert(display_handle, size_t(-1)) << "!" << std::endl;
+                    continue;
                 }
 
-                ++display_index;
+                const auto display_it = std::find_if(begin(m_displays), end(m_displays), [display_name](const std::shared_ptr<Display>& display) {
+                    return (display->name() == display_name);
+                });
+
+                if (display_it == end(m_displays)) {
+                    std::cout << "Warning: NVAPI enunmerates display " << display_name << " but Windows does not!" << std::endl;
+                    continue;
+                }
+
+                NvU32 display_id = 0;
+
+                if (NvAPI_DISP_GetDisplayIdByDisplayName(display_name, &display_id) == NVAPI_OK) {
+                    NvPhysicalGpuHandle physical_gpus[NVAPI_MAX_PHYSICAL_GPUS] = {};
+                    NvU32 num_physical_gpus = 0;
+
+                    if (NvAPI_GetPhysicalGPUsFromDisplay(display_handle, physical_gpus, &num_physical_gpus) != NVAPI_OK) {
+                        throw std::runtime_error("Failed to get physical GPU count!");
+                    }
+
+                    (*display_it)->set_nv_display(display_id, display_handle, num_physical_gpus);
+
+                    if ((*display_it)->logical_gpu_index() == Display::INVALID_LOGICAL_GPU_INDEX) {
+                        NvLogicalGpuHandle logical_gpu_handle = 0;
+
+                        if (NvAPI_GetLogicalGPUFromDisplay(display_handle, &logical_gpu_handle) != NVAPI_OK) {
+                            throw std::runtime_error("Failed to get logical GPU handle!");
+                        }
+
+                        const auto logical_gpu_handle_it = std::find(std::begin(logical_gpu_handles), std::end(logical_gpu_handles), logical_gpu_handle);
+
+                        if (logical_gpu_handle_it == std::end(logical_gpu_handles)) {
+                            throw std::runtime_error("Failed to find logical GPU index!");
+                        }
+
+                        const size_t logical_gpu_index = std::distance(std::begin(logical_gpu_handles), logical_gpu_handle_it);
+                        (*display_it)->set_logical_gpu_index(logical_gpu_index, Display::LogicalGPUIndexSource::NVAPI);
+                    }
+                }
             }
 
             //------------------------------------------------------------------------------
@@ -774,24 +805,27 @@ namespace {
             size_t display_grid_index = 0;
 
             for (const NV_MOSAIC_GRID_TOPO& display_grid : display_grids) {
-                const NvU32 first_display_id = display_grid.displays[0].displayId;
-
-                const auto it = std::find_if(begin(m_displays), end(m_displays), [first_display_id](const std::shared_ptr<Display>& display) {
-                    return (display->nv_display_id() == first_display_id);
-                });
-
-                if (it == end(m_displays)) {
-                    std::cout << "NVAPI enunmerates display " << first_display_id << " but Windows does not!" << std::endl;
-                }
-                else {
-                    (*it)->set_refresh_rate(display_grid.displaySettings.freq);
-                    (*it)->set_nv_mosaic_num_displays(display_grid.displayCount);
-                }
-
                 //------------------------------------------------------------------------------
                 // Print display grid info to console.
                 std::cout << "Display Grid " << display_grid_index++ << std::endl;
                 print_to_stream(std::cout, display_grid, "  ");
+
+                for (size_t display_index = 0; display_index < display_grid.displayCount; ++display_index) {
+                    const NvU32 display_id = display_grid.displays[display_index].displayId;
+
+                    const auto it = std::find_if(begin(m_displays), end(m_displays), [display_id](const std::shared_ptr<Display>& display) {
+                        return (display->nv_display_id() == display_id);
+                    });
+
+                    if (it == end(m_displays)) {
+                        std::cout << "  Warning: NVAPI enunmerates display " << toolbox::StlUtils::hex_insert(display_id, size_t(-1)) << " but Windows does not!" << std::endl;
+                    }
+                    else {
+                        (*it)->set_refresh_rate(display_grid.displaySettings.freq);
+                        (*it)->set_nv_mosaic_num_displays(display_grid.displayCount);
+                        break;
+                    }
+                }
             }
         }
 
@@ -811,7 +845,7 @@ namespace {
 
             uint64_t vr_device_luid = 0;
             vr_system->GetOutputDevice(&vr_device_luid, vr::TextureType_OpenGL);
-            std::cout << "OpenVR output device (LUID): 0x" << std::hex << std::setfill('0') << std::setw(8) << vr_device_luid << std::dec << std::endl;
+            std::cout << "OpenVR output device (LUID): " << toolbox::StlUtils::hex_insert(vr_device_luid, size_t(-1)) << std::endl;
 
             if (vr_system->IsDisplayOnDesktop()) {
                 std::cout << "OpenVR is in extended mode" << std::endl;
@@ -825,7 +859,7 @@ namespace {
                     uint32_t h = 0;
 
                     vr_extended_display->GetWindowBounds(&x, &y, &w, &h);
-                    std::cout << "OpenVR window bounds: " << x << ", " << y << ", " << w << ", " << h << std::endl;
+                    std::cout << "OpenVR window bounds: (" << x << " / " << y << ") [" << w << " x " << h << "]" << std::endl;
 
                     virtual_screen_rect = rect_t(x, y, w, h);
                     render_resolution = glm::uvec2(w, h);
@@ -899,8 +933,9 @@ namespace {
 
                 std::cout << "Adapter " << adapter_index << ": ";
                 std::wcout << adapter_desc.Description;
-                std::cout << ", 0x" << std::hex << adapter_desc.AdapterLuid.HighPart << std::setfill('0') << std::setw(8) << adapter_desc.AdapterLuid.LowPart << std::dec;
-                std::cout << std::endl;
+
+                const uint64_t luid = ((uint64_t(adapter_desc.AdapterLuid.HighPart) << (sizeof(adapter_desc.AdapterLuid.LowPart) * 8)) | adapter_desc.AdapterLuid.LowPart);
+                std::cout << ", " << toolbox::StlUtils::hex_insert(luid, size_t(-1)) << std::endl;
 
                 const bool is_vr_device_adapter = (adapter_desc.AdapterLuid.LowPart == device_luid.LowPart) && (adapter_desc.AdapterLuid.HighPart == device_luid.HighPart);
 
@@ -983,6 +1018,46 @@ namespace {
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
+    HWND stereo_display_window = nullptr;
+
+    LRESULT CALLBACK mosaic_window_callback(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+    {
+        const bool window_created = (GetPropA(hWnd, "MOSAIC_WINDOW_CREATED") != nullptr);
+
+        if ((uMsg == WM_ERASEBKGND) || (uMsg == WM_PAINT)) {
+            if (!window_created) {
+                return DefWindowProc(hWnd, uMsg, wParam, lParam);
+            }
+            else {
+                //------------------------------------------------------------------------------
+                // "An application returns zero if it processes this message." [WM_PAINT docs]
+                return 0;
+            }
+        }
+
+        if ((uMsg == WM_NCCREATE) || (uMsg == WM_CREATE)) {
+            const CREATESTRUCT* const create_struct = reinterpret_cast<const CREATESTRUCT*>(lParam);
+            std::cout << "Window created: (" << create_struct->x << " / " << create_struct->y << ") [" << create_struct->cx << " x " << create_struct->cy << "]" << std::endl;
+        }
+        else if (window_created && (hWnd != stereo_display_window)) {
+            std::cout << "Warning: Received message not associated with the stereo display (msg=" << toolbox::StlUtils::hex_insert(uMsg, size_t(-1)) << ", param=" << wParam << ", param" << toolbox::StlUtils::hex_insert(lParam, size_t(-1)) << ")!" << std::endl;
+        }
+
+        if (uMsg == WM_DISPLAYCHANGE) {
+            std::cout << "Warning: Display change occured. This application is not designed to handle such changes at runtime (msg=" << toolbox::StlUtils::hex_insert(uMsg, size_t(-1)) << ", param=" << wParam << ", param" << toolbox::StlUtils::hex_insert(lParam, size_t(-1)) << ")!" << std::endl;
+        }
+
+        return DefWindowProc(hWnd, uMsg, wParam, lParam);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////
+
+    int control_window_x = 0;
+    int control_window_y = 0;
+    int control_window_width = 0;
+    int control_window_height = 0;
+
     void control_window_key_callback(GLFWwindow* const window, int key, int scancode, int action, int mods)
     {
         if (action == GLFW_PRESS) {
@@ -1013,41 +1088,28 @@ namespace {
 
         //------------------------------------------------------------------------------
         // Create main GLFW window.
-        const long inset = 100;
+        const long inset = 95;
 
-        GLFWwindow* const control_window = glfwCreateWindow((control_display->virtual_screen_rect().m_width - (inset * 2)), (control_display->virtual_screen_rect().m_height - (inset * 2)), "VMI Player", NULL, NULL);
+        control_window_x = (control_display->virtual_screen_rect().m_x + inset);
+        control_window_y = (control_display->virtual_screen_rect().m_y + inset);
+        control_window_width = ((control_display->virtual_screen_rect().m_width / 2) - inset);
+        control_window_height = ((control_display->virtual_screen_rect().m_height / 2) - inset);
+
+        std::cout << "Control window: (" << control_window_x << " / " << control_window_y << ") [" << control_window_width << " x " << control_window_height << "]" << std::endl;
+
+        GLFWwindow* const control_window = glfwCreateWindow(control_window_width, control_window_height, "VMI Player", NULL, NULL);
 
         if (!control_window) {
             throw std::runtime_error("Failed to create main window!");
         }
 
         glfwSetKeyCallback(control_window, &control_window_key_callback);
-        glfwSetWindowPos(control_window, (control_display->virtual_screen_rect().m_x + inset), (control_display->virtual_screen_rect().m_y + inset));
+        glfwSetWindowPos(control_window, control_window_x, control_window_y);
         glfwShowWindow(control_window);
 
         //------------------------------------------------------------------------------
         // ...
         return control_window;
-    }
-
-    LRESULT CALLBACK mosaic_window_callback(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
-    {
-        if ((uMsg == WM_ERASEBKGND) || (uMsg == WM_PAINT)) {
-            if (GetPropA(hWnd, "IGNORE_PAINT_MESSAGES") == nullptr) {
-                return DefWindowProc(hWnd, uMsg, wParam, lParam);
-            }
-            else {
-                //------------------------------------------------------------------------------
-                // "An application returns zero if it processes this message." [WM_PAINT docs]
-                return 0;
-            }
-        }
-
-        if (uMsg == WM_DISPLAYCHANGE) {
-            std::cout << "Warning: Display change occured. This application is not designed to handle such changes at runtime!" << std::endl;
-        }
-
-        return DefWindowProc(hWnd, uMsg, wParam, lParam);
     }
 
     //------------------------------------------------------------------------------
@@ -1104,7 +1166,7 @@ namespace {
 
         ShowWindow(window, SW_SHOWDEFAULT);
         UpdateWindow(window);
-        SetPropA(window, "IGNORE_PAINT_MESSAGES", HANDLE(1));
+        SetPropA(window, "MOSAIC_WINDOW_CREATED", HANDLE(1));
 
         //------------------------------------------------------------------------------
         // Setup the display context.
@@ -1202,14 +1264,15 @@ namespace {
     {
         //------------------------------------------------------------------------------
         // Identify primary/support GPUs.
-        std::deque<HGPUNV> unassigned_gpus;
+        std::deque<std::pair<HGPUNV, size_t>> unassigned_gpus;
         HGPUNV primary_gpu = nullptr;
+        size_t primary_gpu_index = size_t(-1);
 
         UINT gpu_index = 0;
         HGPUNV gpu = nullptr;
 
         while (wglEnumGpusNV(gpu_index, &gpu)) {
-            std::cout << "GPU " << gpu_index << ":" << std::endl;
+            std::cout << "OpenGL GPU " << gpu_index << ":" << std::endl;
 
             //------------------------------------------------------------------------------
             // Enumerate devices (displays).
@@ -1232,9 +1295,10 @@ namespace {
             if (is_primary_gpu) {
                 assert(!primary_gpu);
                 primary_gpu = gpu;
+                primary_gpu_index = gpu_index;
             }
             else {
-                unassigned_gpus.push_back(gpu);
+                unassigned_gpus.emplace_back(gpu, gpu_index);
             }
 
             ++gpu_index;
@@ -1249,7 +1313,8 @@ namespace {
                 throw std::runtime_error("Failed to identify a primary GPU!");
             }
 
-            primary_gpu = unassigned_gpus.front();
+            primary_gpu = unassigned_gpus.front().first;
+            primary_gpu_index = unassigned_gpus.front().second;
             unassigned_gpus.pop_front();
         }
 
@@ -1257,12 +1322,17 @@ namespace {
             throw std::runtime_error("Failed to identify a support GPU!");
         }
 
-        const HGPUNV support_gpu = unassigned_gpus.front();
+        const HGPUNV support_gpu = unassigned_gpus.front().first;
+        const size_t support_gpu_index = unassigned_gpus.front().second;
         unassigned_gpus.pop_front();
+
+        std::cout << "Primary OpenGL GPU: " << primary_gpu_index << std::endl;
+        std::cout << "Support OpenGL GPU: " << support_gpu_index << std::endl;
 
         //------------------------------------------------------------------------------
         // Create the OpenGL affinity contexts.
         assert(primary_gpu != support_gpu);
+        assert(primary_gpu_index != support_gpu_index);
 
         primary_gl_context = create_opengl_affinity_context(primary_dc, primary_gpu, pixel_format_desc);
         support_gl_context = create_opengl_affinity_context(support_dc, support_gpu, pixel_format_desc);
@@ -1429,10 +1499,10 @@ namespace {
     std::unique_ptr<HWW::HWWrapper> wrapper;
 
     std::shared_ptr<Display> stereo_display;
-    HWND stereo_display_window = nullptr;
 
     std::future<void> render_thread;
     std::atomic_bool exit_render_thread = false;
+    std::atomic_size_t render_thread_frame_index = 0;
 
     GLuint support_framebuffer = 0;
     GLuint support_color_attachment = 0;
@@ -1908,6 +1978,7 @@ namespace {
             }
 
             time += (1.0 / 90.0);
+            render_thread_frame_index = frame_index;
         }
     }
 
@@ -1940,6 +2011,8 @@ namespace {
         });
 
         thread_initialized.get_future().get();
+
+        std::cout << "Render thread is running" << std::endl;
     }
     
     void terminate_render_thread()
@@ -1951,6 +2024,8 @@ namespace {
         try {
             exit_render_thread = true;
             render_thread.get();
+
+            std::cout << "Render thread terminated" << std::endl;
         }
         catch (std::exception& e) {
             std::cerr << "Exception: " << e.what() << std::endl;
@@ -2159,6 +2234,8 @@ main(int argc, const char* argv[])
             stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
         }
 
+        std::cout << "Stereo display: " << (*stereo_display) << std::endl;
+
         create_render_contexts(stereo_display, pixel_format_desc);
 
         //------------------------------------------------------------------------------
@@ -2209,7 +2286,32 @@ main(int argc, const char* argv[])
 
             time += (1.0 / 15.0);
             time = fmod(time, 1.0);
+
+            //------------------------------------------------------------------------------
+            // Check on control window position/size.
+            int x = 0;
+            int y = 0;
+            int width = 0;
+            int height = 0;
+            
+            glfwGetWindowPos(control_window, &x, &y);
+            glfwGetWindowSize(control_window, &width, &height);
+
+            if ((x != control_window_x) || (y != control_window_y) || (width != control_window_width) || (height != control_window_height)) {
+                control_window_x = x;
+                control_window_y = y;
+                control_window_width = width;
+                control_window_height = height;
+
+                std::cout << "Control window: (" << control_window_x << " / " << control_window_y << ") [" << control_window_width << " x " << control_window_height << "]" << std::endl;
+            }
+
+            //------------------------------------------------------------------------------
+            // Show render thread progress.
+            std::cout << "Render thread frame index: " << render_thread_frame_index << '\r';
         }
+
+        std::cout << std::endl;
 
         terminate_render_thread();
     }
