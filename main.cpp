@@ -1132,7 +1132,7 @@ namespace {
             wc.hCursor = LoadCursor(NULL, IDC_ARROW);
             wc.hbrBackground = NULL;
             wc.lpszMenuName = NULL;
-            wc.lpszClassName = "VMI Player";
+            wc.lpszClassName = "VMI Player Mosaic Window";
         }
 
         RegisterClassA(&wc);
