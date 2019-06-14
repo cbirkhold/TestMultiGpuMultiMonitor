@@ -2064,7 +2064,11 @@ main(int argc, const char* argv[])
     std::cout << "vmi-player - Copyright (c) 2019 Mine One GmbH d.b.a ViewMagic. All rights reserved." << std::endl;
 
     for (int arg_index = 1; arg_index < argc; ++arg_index) {
-        if ((!strcmp(argv[arg_index], "-?")) || (!strcmp(argv[arg_index], "--help"))) {
+        // Allow disabling arguments by adding '' in front.
+        if (!strcmp(argv[arg_index], "!")) {
+            ++arg_index;
+        }
+        else if ((!strcmp(argv[arg_index], "-?")) || (!strcmp(argv[arg_index], "--help"))) {
             std::cout << std::endl;
             std::cout << "\t-h/--help                     Show command line options." << std::endl;
             std::cout << "\t--enable-wrapper              Use the wrapper library for present for display." << std::endl;
