@@ -38,18 +38,17 @@
 #include <nvapi.h>
 
 //------------------------------------------------------------------------------
-// GLFW
-//------------------------------------------------------------------------------
-
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-
-//------------------------------------------------------------------------------
 // GLEW
 //------------------------------------------------------------------------------
 
 #include <GL/glew.h>
 #include <GL/wglew.h>
+
+//------------------------------------------------------------------------------
+// GLFW
+//------------------------------------------------------------------------------
+
+#include <GLFW/glfw3.h>
 
 //------------------------------------------------------------------------------
 // GLM
@@ -2175,12 +2174,20 @@ main(int argc, const char* argv[])
         // Initialize OpenGL (GLEW) via the control window context.
         glfwMakeContextCurrent(control_window);
 
-        glewExperimental = GL_TRUE;
+        std::cout << "GLEW: " << reinterpret_cast<const char*>(glewGetString(GLEW_VERSION)) << std::endl;
+
+        glGetError();   // Reset OpenGL error.
         const GLenum glew_result = glewInit();
 
         if (glew_result != GLEW_OK) {
             std::cerr << "Error: Failed to initialize GLEW: " << glewGetErrorString(glew_result) << std::endl;
             return EXIT_FAILURE;
+        }
+
+        const GLenum glew_init_opengl_error = glGetError();
+
+        if (glew_init_opengl_error != GL_NO_ERROR) {
+            std::cerr << "Warning: GLEW init with OpenGL error: 0x" << std::hex << glew_init_opengl_error << std::dec << std::endl;
         }
 
         std::cout << "OpenGL vendor: " << glGetString(GL_VENDOR) << std::endl;
