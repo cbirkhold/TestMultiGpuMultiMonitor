@@ -2109,8 +2109,8 @@ main(int argc, const char* argv[])
     glfwGetVersion(&glfw_version_major, &glfw_version_minor, &glfw_version_rev);
     std::cout << "GLFW: " << glfwGetVersionString() << std::endl;
 
-    if ((glfw_version_major < 3) || ((glfw_version_major == 3) && (glfw_version_minor < 2))) {
-        std::cerr << "Error: GLFW 3.2 or newer exepcted!" << std::endl;
+    if ((glfw_version_major < 3) || ((glfw_version_major == 3) && (glfw_version_minor < 3))) {
+        std::cerr << "Error: GLFW 3.3 or newer exepcted!" << std::endl;
         return EXIT_FAILURE;
     }
 
