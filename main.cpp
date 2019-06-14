@@ -1920,9 +1920,6 @@ namespace {
                     // Let the wrapper handle distortion/color.
                     else {
                         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                        glViewport(0, 0, GLsizei(stereo_display_width), GLsizei(stereo_display_height));
-                        glDisable(GL_SCISSOR_TEST);
-
                         glGetError();   // Reset OpenGL error.
 
                         wrapper->Render(support_color_attachment_copy, primary_color_attachment, float(time));
@@ -1982,9 +1979,6 @@ namespace {
                     //------------------------------------------------------------------------------
                     // Use wrapper to process distortion/color.
                     glBindFramebuffer(GL_FRAMEBUFFER, openvr_compositor_framebuffer);
-                    glViewport(0, 0, GLsizei(stereo_display_width), GLsizei(stereo_display_height));
-                    glDisable(GL_SCISSOR_TEST);
-
                     glGetError();   // Reset OpenGL error.
 
                     wrapper->Render(support_color_attachment_copy, primary_color_attachment, float(time));
