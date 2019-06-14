@@ -1534,7 +1534,6 @@ namespace {
 
     GLuint openvr_compositor_framebuffer = 0;
     GLuint openvr_compositor_color_attachment = 0;
-    GLuint openvr_compositor_depth_attachment = 0;
 
     GLuint render_points_programs[2] = {};
     GLuint render_points_vao[2] = {};
@@ -1604,7 +1603,7 @@ namespace {
 
         create_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
         create_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-        create_texture_backed_render_targets(&openvr_compositor_framebuffer, &openvr_compositor_color_attachment, &openvr_compositor_depth_attachment, 1, stereo_display->render_resolution().x, stereo_display->render_resolution().y);
+        create_texture_backed_render_targets(&openvr_compositor_framebuffer, &openvr_compositor_color_attachment, nullptr, 1, stereo_display->render_resolution().x, stereo_display->render_resolution().y);
 
         render_points_programs[PRIMARY_CONTEXT_INDEX] = RenderPoints::create_program();
     }
