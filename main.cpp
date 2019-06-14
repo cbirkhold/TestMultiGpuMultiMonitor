@@ -2010,6 +2010,10 @@ namespace {
             time += (1.0 / 90.0);
             render_thread_frame_index = frame_index;
         }
+
+        //------------------------------------------------------------------------------
+        // Release current OpenGL context.
+        wglMakeCurrent(nullptr, nullptr);
     }
 
     void create_render_thread()
@@ -2200,7 +2204,7 @@ main(int argc, const char* argv[])
         //------------------------------------------------------------------------------
         // Get display configuration.
         DisplayConfiguration display_configuration;
-        
+
         //------------------------------------------------------------------------------
         // Create control window first as we need its context to initialize OpenGL.
         GLFWwindow* const control_window = create_control_window(display_configuration.control_display());
@@ -2331,7 +2335,7 @@ main(int argc, const char* argv[])
             // Render control window.
             glClearColor(0.5, 0.25, GLclampf(time), 1.0);
             glClear(GL_COLOR_BUFFER_BIT);
-            
+
             glfwSwapBuffers(control_window);
 
             //------------------------------------------------------------------------------
@@ -2347,7 +2351,7 @@ main(int argc, const char* argv[])
             int y = 0;
             int width = 0;
             int height = 0;
-            
+
             glfwGetWindowPos(control_window, &x, &y);
             glfwGetWindowSize(control_window, &width, &height);
 
@@ -2367,7 +2371,37 @@ main(int argc, const char* argv[])
 
         std::cout << std::endl;
 
+        //------------------------------------------------------------------------------
+        // Terminate render thread.
         terminate_render_thread();
+
+        //------------------------------------------------------------------------------
+        // Finalize wrapper.
+        if (wrapper) {
+            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
+                throw std::runtime_error("Failed to make OpenGL context current!");
+            }
+
+            try {
+                glGetError();   // Reset OpenGL error.
+
+                wrapper.reset();
+
+                const GLenum error = glGetError();
+
+                if (error != GL_NO_ERROR) {
+                    wrapper_opengl_errors.insert(error);
+                }
+            }
+            catch (std::exception& e) {
+                std::cerr << "Exception: " << e.what() << std::endl;
+                return EXIT_FAILURE;
+            }
+            catch (...) {
+                std::cerr << "Failed to initialize wrapper: Unknown exception!" << std::endl;
+                return EXIT_FAILURE;
+            }
+        }
     }
     catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
@@ -2378,6 +2412,8 @@ main(int argc, const char* argv[])
         return EXIT_FAILURE;
     }
 
+    //------------------------------------------------------------------------------
+    // List any OpenGL errors that occured in the wrapper.
     if (!wrapper_opengl_errors.empty()) {
         std::cerr << "Warning: Wrapper had OpenGL errors:" << std::endl;
 
@@ -2386,6 +2422,8 @@ main(int argc, const char* argv[])
         }
     }
 
+    //------------------------------------------------------------------------------
+    // ...
     return EXIT_SUCCESS;
 }
 
