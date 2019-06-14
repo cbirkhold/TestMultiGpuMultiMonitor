@@ -87,6 +87,8 @@ namespace {
     //------------------------------------------------------------------------------
 
     constexpr size_t NUM_EYES = 2;
+    constexpr size_t EYE_INDEX_LEFT = 0;
+    constexpr size_t EYE_INDEX_RIGHT = 1;
 
     constexpr int GL_CONTEXT_VERSION_MAJOR = 4;
     constexpr int GL_CONTEXT_VERSION_MINOR = 6;
@@ -1404,11 +1406,13 @@ namespace {
                 "#version 460\n"
                 "uniform vec4 u_rect;\n"
                 "uniform mat4 u_mvp;\n"
+                "uniform int u_grid_size;\n"
+                "uniform float u_grid_size_minus_one_recip;\n"
                 "out vec2 v_uv;\n"
                 "void main() {\n"
-                "    int x = (gl_VertexID % 1024);\n"
-                "    int y = (gl_VertexID / 1024);\n"
-                "    vec2 uv = (vec2(x, y) * (1.0 / 1023.0));\n"
+                "    int x = (gl_VertexID % u_grid_size);\n"
+                "    int y = (gl_VertexID / u_grid_size);\n"
+                "    vec2 uv = (vec2(x, y) * u_grid_size_minus_one_recip);\n"
                 "    gl_Position = (u_mvp * vec4((u_rect.xy + (uv * u_rect.zw)), 0.0, 1.0));\n"
                 "    v_uv = vec2(uv.x, uv.y);\n"
                 "}\n";
@@ -1432,6 +1436,8 @@ namespace {
 
                 s_uniform_location_rect = glGetUniformLocation(program, "u_rect");
                 s_uniform_location_mvp = glGetUniformLocation(program, "u_mvp");
+                s_uniform_location_grid_size = glGetUniformLocation(program, "u_grid_size");
+                s_uniform_location_grid_size_minus_one_recip = glGetUniformLocation(program, "u_grid_size_minus_one_recip");
 
                 return program;
             }
@@ -1459,34 +1465,43 @@ namespace {
             }
         }
 
-        static void draw(GLuint& vao)
+        static void draw(GLuint& vao, size_t grid_size)
         {
             if (!vao) {
                 glGenVertexArrays(1, &vao);
             }
 
+            glUniform1i(s_uniform_location_grid_size, int(grid_size));
+            glUniform1f(s_uniform_location_grid_size_minus_one_recip, (1.0f / float(grid_size - 1)));
+
             glBindVertexArray(vao);
-            glDrawArrays(GL_POINTS, 0, (1024 * 1024));
+            glDrawArrays(GL_POINTS, 0, GLsizei(grid_size * grid_size));
         }
 
     private:
 
         static GLint        s_uniform_location_rect;
         static GLint        s_uniform_location_mvp;
+        static GLint        s_uniform_location_grid_size;
+        static GLint        s_uniform_location_grid_size_minus_one_recip;
     };
 
     GLint RenderPoints::s_uniform_location_rect = -1;
     GLint RenderPoints::s_uniform_location_mvp = -1;
+    GLint RenderPoints::s_uniform_location_grid_size = -1;
+    GLint RenderPoints::s_uniform_location_grid_size_minus_one_recip = -1;
 
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
     constexpr size_t PER_GPU_PASS_FRAMEBUFFER_WIDTH = 1024;
     constexpr size_t PER_GPU_PASS_FRAMEBUFFER_HEIGHT = 1024;
+
     constexpr size_t PRIMARY_CONTEXT_INDEX = 0;
     constexpr size_t SUPPORT_CONTEXT_INDEX = 1;
 
     constexpr float DEFAULT_IPD = 65.0f;
+    constexpr size_t RENDER_POINTS_GRID_SIZE = 64;
 
     bool enable_wrapper = false;
     bool always_use_openvr = false;
@@ -1526,6 +1541,21 @@ namespace {
         0.0, 0.0, 1.0, 0.0,
         0.0, 0.0, 0.0, 1.0,
     };
+
+
+    void render_points(GLuint& vao, size_t num_draws, const glm::mat4& hmd_pose, const glm::mat4& projection_matrix)
+    {
+        glm::mat4 pose(1.0);
+        pose[3] = hmd_pose[3];
+        pose[3].z -= 1.0;
+
+        const glm::mat4 mvp = ((projection_matrix * glm::inverse(hmd_pose)) * pose);
+        RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
+
+        for (size_t i = 0; i < num_draws; ++i) {
+            RenderPoints::draw(vao, RENDER_POINTS_GRID_SIZE);
+        }
+    }
 
     void initialize_render_thread()
     {
@@ -1713,19 +1743,10 @@ namespace {
                 glClear(GL_COLOR_BUFFER_BIT);
 
                 glUseProgram(render_points_programs[SUPPORT_CONTEXT_INDEX]);
-
                 RenderPoints::set_rect(rect);
 
-                glm::mat4 pose(1.0);
-                pose[3] = hmd_pose[3];
-                pose[3].z -= 1.0;
-
-                const glm::mat4 mvp = ((projection_matrices[0] * glm::inverse(hmd_pose)) * pose);
-                RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
-
-                for (size_t i = 0; i < 80; ++i) {
-                    RenderPoints::draw(render_points_vao[SUPPORT_CONTEXT_INDEX]);
-                }
+                render_points(render_points_vao[SUPPORT_CONTEXT_INDEX], 40, hmd_pose, projection_matrices[EYE_INDEX_LEFT]);
+                render_points(render_points_vao[SUPPORT_CONTEXT_INDEX], 40, wrapper_pose, projection_matrices[EYE_INDEX_LEFT]);
             }
             else {
                 glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
@@ -1789,19 +1810,10 @@ namespace {
                 glClear(GL_COLOR_BUFFER_BIT);
 
                 glUseProgram(render_points_programs[PRIMARY_CONTEXT_INDEX]);
-
                 RenderPoints::set_rect(rect);
 
-                glm::mat4 pose(1.0);
-                pose[3] = hmd_pose[3];
-                pose[3].z -= 1.0;
-
-                const glm::mat4 mvp = ((projection_matrices[1] * glm::inverse(hmd_pose)) * pose);
-                RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
-
-                for (size_t i = 0; i < 40; ++i) {
-                    RenderPoints::draw(render_points_vao[PRIMARY_CONTEXT_INDEX]);
-                }
+                render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, hmd_pose, projection_matrices[EYE_INDEX_RIGHT]);
+                render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, wrapper_pose, projection_matrices[EYE_INDEX_RIGHT]);
             }
             else {
                 glClearColor(0.5, 0.25, GLclampf(fraction), 1.0);
@@ -1818,19 +1830,10 @@ namespace {
                     glClear(GL_COLOR_BUFFER_BIT);
 
                     glUseProgram(render_points_programs[PRIMARY_CONTEXT_INDEX]);
-
                     RenderPoints::set_rect(rect);
 
-                    glm::mat4 pose(1.0);
-                    pose[3] = hmd_pose[3];
-                    pose[3].z -= 1.0;
-
-                    const glm::mat4 mvp = ((projection_matrices[0] * glm::inverse(hmd_pose)) * pose);
-                    RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
-
-                    for (size_t i = 0; i < 40; ++i) {
-                        RenderPoints::draw(render_points_vao[PRIMARY_CONTEXT_INDEX]);
-                    }
+                    render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, hmd_pose, projection_matrices[EYE_INDEX_LEFT]);
+                    render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, wrapper_pose, projection_matrices[EYE_INDEX_LEFT]);
                 }
                 else {
                     glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
