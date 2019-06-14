@@ -4,6 +4,8 @@ project(vmi-player)
 
 add_compile_definitions(GLEW_STATIC=1)
 add_compile_definitions(GLFW_INCLUDE_NONE)
+add_compile_definitions(GLM_FORCE_MESSAGES GLM_FORCE_SWIZZLE)
+add_compile_definitions(WIN32_LEAN_AND_MEAN)
 
 add_executable(vmi-player main.cpp OpenGLUtilities.cpp CppUtilities.cpp)
 
