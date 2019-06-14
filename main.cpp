@@ -1491,6 +1491,7 @@ namespace {
     bool always_use_openvr_submit = false;
 
     std::unique_ptr<HWW::HWWrapper> wrapper;
+    std::set<GLenum> wrapper_opengl_errors;
 
     std::shared_ptr<Display> stereo_display;
 
@@ -1873,7 +1874,15 @@ namespace {
                         glViewport(0, 0, GLsizei(stereo_display_width), GLsizei(stereo_display_height));
                         glDisable(GL_SCISSOR_TEST);
 
+                        glGetError();   // Reset OpenGL error.
+
                         wrapper->Render(support_color_attachment_copy, primary_color_attachment, float(time));
+
+                        const GLenum error = glGetError();
+
+                        if (error != GL_NO_ERROR) {
+                            wrapper_opengl_errors.insert(error);
+                        }
                     }
 
                     //------------------------------------------------------------------------------
@@ -1928,12 +1937,20 @@ namespace {
                 // distorted eye textures to OpenVR.
                 else {
                     //------------------------------------------------------------------------------
-                    // Use wrapper to process distrotion/color.
+                    // Use wrapper to process distortion/color.
                     glBindFramebuffer(GL_FRAMEBUFFER, openvr_compositor_framebuffer);
                     glViewport(0, 0, GLsizei(stereo_display_width), GLsizei(stereo_display_height));
                     glDisable(GL_SCISSOR_TEST);
 
+                    glGetError();   // Reset OpenGL error.
+
                     wrapper->Render(support_color_attachment_copy, primary_color_attachment, float(time));
+
+                    const GLenum error = glGetError();
+
+                    if (error != GL_NO_ERROR) {
+                        wrapper_opengl_errors.insert(error);
+                    }
 
                     //------------------------------------------------------------------------------
                     // Submit pre-processed (distortion/color) eye textures to the OpenVR compositor.
@@ -2252,10 +2269,18 @@ main(int argc, const char* argv[])
             }
 
             try {
+                glGetError();   // Reset OpenGL error.
+
                 wrapper->Initialize();
                 wrapper->SetIPD(DEFAULT_IPD);
                 wrapper->SetTrackerPredictionTime(0.044f);
                 wrapper->SetViewportDimentions(stereo_display->render_resolution().x, stereo_display->render_resolution().y);
+
+                const GLenum error = glGetError();
+
+                if (error != GL_NO_ERROR) {
+                    wrapper_opengl_errors.insert(error);
+                }
             }
             catch (std::exception& e) {
                 std::cerr << "Exception: " << e.what() << std::endl;
@@ -2328,6 +2353,14 @@ main(int argc, const char* argv[])
     catch (...) {
         std::cerr << "Application failed: Unknown exception!" << std::endl;
         return EXIT_FAILURE;
+    }
+
+    if (!wrapper_opengl_errors.empty()) {
+        std::cerr << "Warning: Wrapper had OpenGL errors:" << std::endl;
+
+        for (GLenum error : wrapper_opengl_errors) {
+            std::cerr << "  " << toolbox::StlUtils::hex_insert(error) << std::endl;
+        }
     }
 
     return EXIT_SUCCESS;
