@@ -1520,9 +1520,6 @@ namespace {
     constexpr float DEFAULT_IPD = 65.0f;
     constexpr size_t RENDER_POINTS_GRID_SIZE = 64;
 
-    bool enable_wrapper = false;
-    bool always_use_openvr = false;
-    bool always_use_openvr_compositor = false;
     bool always_use_openvr_pose = false;
     bool always_use_openvr_submit = false;
 
@@ -2102,6 +2099,10 @@ int
 main(int argc, const char* argv[])
 {
     std::cout << "vmi-player - Copyright (c) 2019 Mine One GmbH d.b.a ViewMagic. All rights reserved." << std::endl;
+
+    bool enable_wrapper = false;
+    bool always_use_openvr = false;
+    bool always_use_openvr_compositor = false;
 
     for (int arg_index = 1; arg_index < argc; ++arg_index) {
         // Allow disabling arguments by adding '' in front.
