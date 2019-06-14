@@ -1038,7 +1038,7 @@ namespace {
         }
 
         if (uMsg == WM_DISPLAYCHANGE) {
-            std::cout << "Warning: Display change occured. This application is not designed to handle such changes at runtime (msg=" << toolbox::StlUtils::hex_insert(uMsg, size_t(-1)) << ", param=" << wParam << ", param" << toolbox::StlUtils::hex_insert(lParam, size_t(-1)) << ")!" << std::endl;
+            std::cout << "Warning: Display change occured. This application is not designed to handle such changes at runtime (msg=" << toolbox::StlUtils::hex_insert(uMsg, size_t(-1)) << ", param=" << wParam << ", param=" << toolbox::StlUtils::hex_insert(lParam, size_t(-1)) << ")!" << std::endl;
         }
 
         return DefWindowProc(hWnd, uMsg, wParam, lParam);
