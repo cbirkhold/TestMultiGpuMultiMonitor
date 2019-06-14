@@ -153,7 +153,7 @@ namespace {
 
     void print_display_flags_to_stream(std::ostream& stream, DWORD flags)
     {
-        stream << toolbox::StlUtils::hex_insert(flags, size_t(-1));
+        stream << toolbox::StlUtils::hex_insert(flags);
 
         if (flags != 0) {
             bool first = true;
@@ -351,8 +351,8 @@ namespace {
             stream << display.m_virtual_screen_rect.m_x << " / " << display.m_virtual_screen_rect.m_y << ") [";
             stream << display.m_virtual_screen_rect.m_width << " x " << display.m_virtual_screen_rect.m_height << "] @ ";
             stream << display.m_refresh_rate << " Hz, ";
-            stream << "(id=" << toolbox::StlUtils::hex_insert(display.m_nv_display_id, size_t(-1));
-            stream << ", handle=" << toolbox::StlUtils::hex_insert(display.m_nv_display_handle, size_t(-1));
+            stream << "(id=" << toolbox::StlUtils::hex_insert(display.m_nv_display_id);
+            stream << ", handle=" << toolbox::StlUtils::hex_insert(display.m_nv_display_handle);
             stream << ", num_pgpus=" << display.m_nv_num_physical_gpus << ", num_mosaic_displays=" << display.m_nv_mosaic_num_displays << ")";
             return stream;
         }
@@ -539,7 +539,7 @@ namespace {
                     is_primary = ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) == MONITORINFOF_PRIMARY);
                 }
                 else {
-                    std::cout << "Monitor 0x" << toolbox::StlUtils::hex_insert(monitor, size_t(-1));
+                    std::cout << "Monitor 0x" << toolbox::StlUtils::hex_insert(monitor);
                 }
 
                 std::cout << "(" << virtual_screen_rect.m_x << " / " << virtual_screen_rect.m_y << ") [" << virtual_screen_rect.m_width << " x " << virtual_screen_rect.m_height << "]";
@@ -601,7 +601,7 @@ namespace {
                 std::wcout << adapter_desc.Description;
 
                 const uint64_t luid = ((uint64_t(adapter_desc.AdapterLuid.HighPart) << (sizeof(adapter_desc.AdapterLuid.LowPart) * 8)) | adapter_desc.AdapterLuid.LowPart);
-                std::cout << ", " << toolbox::StlUtils::hex_insert(luid, size_t(-1)) << std::endl;
+                std::cout << ", " << toolbox::StlUtils::hex_insert(luid) << std::endl;
 
                 //------------------------------------------------------------------------------
                 // Enumerate outputs (displays).
@@ -668,7 +668,7 @@ namespace {
                 NvAPI_ShortString display_name = {};
 
                 if (NvAPI_GetAssociatedNvidiaDisplayName(display_handle, display_name) != NVAPI_OK) {
-                    std::cout << "Warning: NVAPI enumerates nameless display " << toolbox::StlUtils::hex_insert(display_handle, size_t(-1)) << "!" << std::endl;
+                    std::cout << "Warning: NVAPI enumerates nameless display " << toolbox::StlUtils::hex_insert(display_handle) << "!" << std::endl;
                     continue;
                 }
 
@@ -812,7 +812,7 @@ namespace {
                     });
 
                     if (it == end(m_displays)) {
-                        std::cout << "  Warning: NVAPI enumerates display " << toolbox::StlUtils::hex_insert(display_id, size_t(-1)) << " but Windows does not!" << std::endl;
+                        std::cout << "  Warning: NVAPI enumerates display " << toolbox::StlUtils::hex_insert(display_id) << " but Windows does not!" << std::endl;
                     }
                     else {
                         (*it)->set_refresh_rate(display_grid.displaySettings.freq);
@@ -839,7 +839,7 @@ namespace {
 
             uint64_t vr_device_luid = 0;
             vr_system->GetOutputDevice(&vr_device_luid, vr::TextureType_OpenGL);
-            std::cout << "OpenVR output device (LUID): " << toolbox::StlUtils::hex_insert(vr_device_luid, size_t(-1)) << std::endl;
+            std::cout << "OpenVR output device (LUID): " << toolbox::StlUtils::hex_insert(vr_device_luid) << std::endl;
 
             if (vr_system->IsDisplayOnDesktop()) {
                 std::cout << "OpenVR is in extended mode" << std::endl;
@@ -929,7 +929,7 @@ namespace {
                 std::wcout << adapter_desc.Description;
 
                 const uint64_t luid = ((uint64_t(adapter_desc.AdapterLuid.HighPart) << (sizeof(adapter_desc.AdapterLuid.LowPart) * 8)) | adapter_desc.AdapterLuid.LowPart);
-                std::cout << ", " << toolbox::StlUtils::hex_insert(luid, size_t(-1)) << std::endl;
+                std::cout << ", " << toolbox::StlUtils::hex_insert(luid) << std::endl;
 
                 const bool is_vr_device_adapter = (adapter_desc.AdapterLuid.LowPart == device_luid.LowPart) && (adapter_desc.AdapterLuid.HighPart == device_luid.HighPart);
 
@@ -1034,11 +1034,11 @@ namespace {
             std::cout << "Window created: (" << create_struct->x << " / " << create_struct->y << ") [" << create_struct->cx << " x " << create_struct->cy << "]" << std::endl;
         }
         else if (window_created && (hWnd != stereo_display_window)) {
-            std::cout << "Warning: Received message not associated with the stereo display (msg=" << toolbox::StlUtils::hex_insert(uMsg, size_t(-1)) << ", param=" << wParam << ", param" << toolbox::StlUtils::hex_insert(lParam, size_t(-1)) << ")!" << std::endl;
+            std::cout << "Warning: Received message not associated with the stereo display (msg=" << toolbox::StlUtils::hex_insert(uMsg) << ", param=" << wParam << ", param" << toolbox::StlUtils::hex_insert(lParam) << ")!" << std::endl;
         }
 
         if (uMsg == WM_DISPLAYCHANGE) {
-            std::cout << "Warning: Display change occured. This application is not designed to handle such changes at runtime (msg=" << toolbox::StlUtils::hex_insert(uMsg, size_t(-1)) << ", param=" << wParam << ", param=" << toolbox::StlUtils::hex_insert(lParam, size_t(-1)) << ")!" << std::endl;
+            std::cout << "Warning: Display change occured. This application is not designed to handle such changes at runtime (msg=" << toolbox::StlUtils::hex_insert(uMsg) << ", param=" << wParam << ", param=" << toolbox::StlUtils::hex_insert(lParam) << ")!" << std::endl;
         }
 
         return DefWindowProc(hWnd, uMsg, wParam, lParam);

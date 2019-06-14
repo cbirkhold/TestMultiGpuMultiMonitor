@@ -80,7 +80,7 @@ namespace toolbox {
     };
 
     template<class ValueT>
-    static HexInsert<ValueT> hex_insert(ValueT value, size_t width)
+    static HexInsert<ValueT> hex_insert(ValueT value, size_t width = size_t(-1))
     {
       return HexInsert<ValueT>(value, width);
     }
