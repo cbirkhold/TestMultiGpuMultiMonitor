@@ -101,6 +101,12 @@ namespace {
 
     constexpr char GLSL_VERSION[] = "#version 460";
 
+    //------------------------------------------------------------------------------
+    // Configuration
+    //------------------------------------------------------------------------------
+
+    constexpr bool DEBUG_WRAPPER_VS_OPENVR_HMD_POSE = false;
+
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
@@ -1542,6 +1548,20 @@ namespace {
         0.0, 0.0, 0.0, 1.0,
     };
 
+    glm::mat4 eval_hmd_pose(const HWW::HWWrapper& wrapper)
+    {
+        glm::vec3 hmd_position;
+        glm::quat hmd_orientation;
+
+        if (!wrapper.GetHMDPose(hmd_position, hmd_orientation)) {
+            return glm::mat4(1.0);
+        }
+
+        const glm::mat4 hmd_rotation = glm::mat4_cast(glm::normalize(hmd_orientation));
+        const glm::mat4 hmd_translation = glm::translate(glm::mat4(1.0), hmd_position);
+
+        return (hmd_translation * hmd_rotation);
+    }
 
     void render_points(GLuint& vao, size_t num_draws, const glm::mat4& hmd_pose, const glm::mat4& projection_matrix)
     {
@@ -1628,24 +1648,10 @@ namespace {
         constexpr float near_z = 0.1f;
         constexpr float far_z = 32.0f;
 
-        glm::mat4 projection_matrices[2] = { glm::mat4(1.0), glm::mat4(1.0) };
-
-        if (!wrapper || always_use_openvr_pose) {
-            for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
-                projection_matrices[eye_index] = glm_from_hmd_matrix(vr_system->GetProjectionMatrix(vr::EVREye(eye_index), near_z, far_z));
-                projection_matrices[eye_index] *= glm::inverse(glm_from_hmd_matrix(vr_system->GetEyeToHeadTransform(vr::EVREye(eye_index))));
-            }
-        }
-        else {
-            projection_matrices[0] = wrapper->GetLeftEyeTransformationMatrix(near_z, far_z);
-            projection_matrices[1] = wrapper->GetRightEyeTransformationMatrix(near_z, far_z);
-        }
-
         //------------------------------------------------------------------------------
         // Render loop.
         glm::vec4 prev_eye_to_head_translation[NUM_EYES] = {};
-        glm::mat4 hmd_pose(1.0);
-
+        float hmd_ipd = DEFAULT_IPD;
         double time = 0.0;
 
         for (size_t frame_index = 0; !exit_render_thread; ++frame_index) {
@@ -1653,8 +1659,32 @@ namespace {
             const double fraction = modf(time, &seconds);
 
             //------------------------------------------------------------------------------
-            // Read pose information either from the wrapper or directly from OpenVR.
-            if (!wrapper || always_use_openvr_pose) {
+            // Read pose information either through the wrapper or directly from OpenVR.
+            const bool use_wrapper_pose = (wrapper && !always_use_openvr_pose);
+            const bool debug_wrapper_pose = (wrapper && DEBUG_WRAPPER_VS_OPENVR_HMD_POSE);
+            const bool wrapper_pose_available = (use_wrapper_pose || debug_wrapper_pose);
+
+            glm::mat4 wrapper_pose = (wrapper_pose_available ? eval_hmd_pose(*wrapper) : glm::mat4(1.0));
+            glm::mat4 projection_matrices[2] = { glm::mat4(1.0), glm::mat4(1.0) };
+            glm::mat4 hmd_pose(1.0);
+
+            if (use_wrapper_pose) {
+                //------------------------------------------------------------------------------
+                // If the wrapper is used but we are using the OpenVR compositor for submission
+                // submission we still need to call WaitGetPoses() to keep the app 'active'.
+                if (!stereo_display_window) {
+                    vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
+                }
+
+                hmd_pose = wrapper_pose;
+
+                wrapper->SetIPD(hmd_ipd);
+                projection_matrices[EYE_INDEX_LEFT] = wrapper->GetLeftEyeTransformationMatrix(near_z, far_z);
+                projection_matrices[EYE_INDEX_RIGHT] = wrapper->GetRightEyeTransformationMatrix(near_z, far_z);
+            }
+            else {
+                //------------------------------------------------------------------------------
+                // Get poses (HMD and other devices) from OpenVR.
                 std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> render_poses;
                 vr_compositor->WaitGetPoses(render_poses.data(), uint32_t(render_poses.size()), nullptr, 0);
 
@@ -1702,30 +1732,12 @@ namespace {
 
                     if (wrapper) {
                         wrapper->SetIPD(ipd);
-                        projection_matrices[0] = wrapper->GetLeftEyeTransformationMatrix(near_z, far_z);
-                        projection_matrices[1] = wrapper->GetRightEyeTransformationMatrix(near_z, far_z);
                     }
                 }
             }
-            else {
-                //------------------------------------------------------------------------------
-                // If the wrapper is used but we are using the OpenVR compositor for eye
-                // texture submission we need to call WaitGetPoses() to keep the app 'active'.
-                if (!stereo_display_window) {
-                    vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
-                }
 
-                //------------------------------------------------------------------------------
-                // Get pose from wrapper.
-                glm::vec3 hmd_position;
-                glm::quat hmd_orientation;
-
-                if (wrapper->GetHMDPose(hmd_position, hmd_orientation)) {
-                    const glm::mat4 hmd_rotation = glm::mat4_cast(glm::normalize(hmd_orientation));
-                    const glm::mat4 hmd_translation = glm::translate(glm::mat4(1.0), hmd_position);
-
-                    hmd_pose = (glm::inverse(hmd_rotation) * glm::inverse(hmd_translation));
-                }
+            if (!wrapper_pose_available) {
+                wrapper_pose = hmd_pose;
             }
 
             //------------------------------------------------------------------------------
