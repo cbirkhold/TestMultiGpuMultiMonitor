@@ -1425,11 +1425,12 @@ namespace {
 
             static const char* const fs_string =
                 "#version 460\n"
+                "uniform vec4 u_color_mask;\n"
                 "in vec2 v_uv;\n"
                 "out vec4 f_color;\n"
                 "void main() {\n"
                 "    float vignette = pow(clamp(((v_uv.x * (1.0f - v_uv.x)) * (v_uv.y * (1.0f - v_uv.y)) * 36.0f), 0.0, 1.0), 4.0);\n"
-                "    f_color = vec4((v_uv.rg * vignette), 0.0, 1.0);\n"
+                "    f_color = vec4(((v_uv.rg * vignette) * u_color_mask.rg), u_color_mask.b, u_color_mask.a);\n"
                 "}\n";
 
             try {
@@ -1444,6 +1445,7 @@ namespace {
                 s_uniform_location_mvp = glGetUniformLocation(program, "u_mvp");
                 s_uniform_location_grid_size = glGetUniformLocation(program, "u_grid_size");
                 s_uniform_location_grid_size_minus_one_recip = glGetUniformLocation(program, "u_grid_size_minus_one_recip");
+                s_uniform_location_color_mask = glGetUniformLocation(program, "u_color_mask");
 
                 return program;
             }
@@ -1471,6 +1473,13 @@ namespace {
             }
         }
 
+        static void set_color_mask(const float* const color_mask)
+        {
+            if (s_uniform_location_color_mask != -1) {
+                glUniform4fv(s_uniform_location_color_mask, 1, color_mask);
+            }
+        }
+
         static void draw(GLuint& vao, size_t grid_size)
         {
             if (!vao) {
@@ -1490,12 +1499,14 @@ namespace {
         static GLint        s_uniform_location_mvp;
         static GLint        s_uniform_location_grid_size;
         static GLint        s_uniform_location_grid_size_minus_one_recip;
+        static GLint        s_uniform_location_color_mask;
     };
 
     GLint RenderPoints::s_uniform_location_rect = -1;
     GLint RenderPoints::s_uniform_location_mvp = -1;
     GLint RenderPoints::s_uniform_location_grid_size = -1;
     GLint RenderPoints::s_uniform_location_grid_size_minus_one_recip = -1;
+    GLint RenderPoints::s_uniform_location_color_mask = -1;
 
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
@@ -1562,7 +1573,7 @@ namespace {
         return (hmd_translation * hmd_rotation);
     }
 
-    void render_points(GLuint& vao, size_t num_draws, const glm::mat4& hmd_pose, const glm::mat4& projection_matrix)
+    void render_points(GLuint& vao, size_t num_draws, const glm::mat4& hmd_pose, const glm::mat4& projection_matrix, const float* const color_mask)
     {
         glm::mat4 pose(1.0);
         pose[3] = hmd_pose[3];
@@ -1570,6 +1581,7 @@ namespace {
 
         const glm::mat4 mvp = ((projection_matrix * glm::inverse(hmd_pose)) * pose);
         RenderPoints::set_mvp(reinterpret_cast<const GLfloat*>(&mvp));
+        RenderPoints::set_color_mask(color_mask);
 
         for (size_t i = 0; i < num_draws; ++i) {
             RenderPoints::draw(vao, RENDER_POINTS_GRID_SIZE);
@@ -1628,7 +1640,7 @@ namespace {
     {
         //------------------------------------------------------------------------------
         // Grab OpenVR system/compositor if we don't have a wrapper or are using any
-        // component of OpenVR alongside/width the wrapper.
+        // component of OpenVR alongside/with the wrapper.
         vr::IVRSystem* vr_system = nullptr;
         vr::IVRCompositor* vr_compositor = nullptr;
 
@@ -1670,7 +1682,7 @@ namespace {
             if (use_wrapper_pose) {
                 //------------------------------------------------------------------------------
                 // If the wrapper is used but we are using the OpenVR compositor for submission
-                // submission we still need to call WaitGetPoses() to keep the app 'active'.
+                // we still need to call WaitGetPoses() to keep the app 'active'.
                 if (!stereo_display_window) {
                     vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
                 }
@@ -1753,11 +1765,18 @@ namespace {
                 glClearColor(0.25, 0.25, 0.25, 1.0);
                 glClear(GL_COLOR_BUFFER_BIT);
 
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ONE, GL_ONE);
+                glBlendEquation(GL_MAX);
+
                 glUseProgram(render_points_programs[SUPPORT_CONTEXT_INDEX]);
                 RenderPoints::set_rect(rect);
 
-                render_points(render_points_vao[SUPPORT_CONTEXT_INDEX], 40, hmd_pose, projection_matrices[EYE_INDEX_LEFT]);
-                render_points(render_points_vao[SUPPORT_CONTEXT_INDEX], 40, wrapper_pose, projection_matrices[EYE_INDEX_LEFT]);
+                const float color_masks[2][4] = { { 1.0f, 0.0f, 0.0, 1.0f }, { 0.0f, 1.0f, 0.0, 1.0f } };
+                render_points(render_points_vao[SUPPORT_CONTEXT_INDEX], 40, hmd_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[0]);
+                render_points(render_points_vao[SUPPORT_CONTEXT_INDEX], 40, wrapper_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[1]);
+
+                glDisable(GL_BLEND);
             }
             else {
                 glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
@@ -1820,11 +1839,18 @@ namespace {
                 glClearColor(0.25, 0.25, 0.25, 1.0);
                 glClear(GL_COLOR_BUFFER_BIT);
 
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ONE, GL_ONE);
+                glBlendEquation(GL_MAX);
+
                 glUseProgram(render_points_programs[PRIMARY_CONTEXT_INDEX]);
                 RenderPoints::set_rect(rect);
 
-                render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, hmd_pose, projection_matrices[EYE_INDEX_RIGHT]);
-                render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, wrapper_pose, projection_matrices[EYE_INDEX_RIGHT]);
+                const float color_masks[2][4] = { { 1.0f, 0.0f, 0.0, 1.0f }, { 0.0f, 1.0f, 0.0, 1.0f } };
+                render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, hmd_pose, projection_matrices[EYE_INDEX_RIGHT], color_masks[0]);
+                render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, wrapper_pose, projection_matrices[EYE_INDEX_RIGHT], color_masks[1]);
+
+                glDisable(GL_BLEND);
             }
             else {
                 glClearColor(0.5, 0.25, GLclampf(fraction), 1.0);
@@ -1840,11 +1866,18 @@ namespace {
                     glClearColor(0.25, 0.25, 0.25, 1.0);
                     glClear(GL_COLOR_BUFFER_BIT);
 
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_ONE, GL_ONE);
+                    glBlendEquation(GL_MAX);
+
                     glUseProgram(render_points_programs[PRIMARY_CONTEXT_INDEX]);
                     RenderPoints::set_rect(rect);
 
-                    render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, hmd_pose, projection_matrices[EYE_INDEX_LEFT]);
-                    render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, wrapper_pose, projection_matrices[EYE_INDEX_LEFT]);
+                    const float color_masks[2][4] = { { 1.0f, 0.0f, 0.0, 1.0f }, { 0.0f, 1.0f, 0.0, 1.0f } };
+                    render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, hmd_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[0]);
+                    render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, wrapper_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[1]);
+
+                    glDisable(GL_BLEND);
                 }
                 else {
                     glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
@@ -1858,13 +1891,14 @@ namespace {
 
             //------------------------------------------------------------------------------
             // Combine into stereo display window or submit to the OpenVR compositor.
-            const size_t stereo_display_width = stereo_display->render_resolution().x;//GetDeviceCaps(stereo_display_dc, HORZRES);
-            const size_t stereo_display_height = stereo_display->render_resolution().y;//GetDeviceCaps(stereo_display_dc, VERTRES);
+            const size_t stereo_display_width = stereo_display->render_resolution().x;
+            const size_t stereo_display_height = stereo_display->render_resolution().y;
 
             //------------------------------------------------------------------------------
-            // If a stereo display is present we are in OpenVR extended mode but are not
-            // using the OpenVR compositor/submit. Whichever way we process the output it
-            // must be rendered to the stereo display context and then swapped to display.
+            // If a stereo display is present we are rendering to a Mosaic display or OpenVR
+            // display in extended mode but are not using the OpenVR compositor/submit.
+            // Whichever way we process the output it must be rendered to the stereo display
+            // context and then swapped to display.
             if (stereo_display_window) {
                 const HDC stereo_display_dc = GetDC(stereo_display_window);
 
@@ -1914,40 +1948,34 @@ namespace {
             // If no stereo display is present we are using the OpenVR compositor to render
             // in direct or extended mode, with or without using the wrapper.
             else {
+                vr::EVRSubmitFlags submit_flags = vr::Submit_Default;
+                vr::VRTextureBounds_t bounds[NUM_EYES] = {};
+                vr::Texture_t eye_textures[NUM_EYES] = {};
+
+                for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
+                    bounds[eye_index].vMin = 0.0;
+                    bounds[eye_index].vMax = 1.0;
+
+                    eye_textures[eye_index].eType = vr::TextureType_OpenGL;
+                }
+
                 //------------------------------------------------------------------------------
                 // If we don't have the wrapper or are always using the OpenVR compositor to
                 // submit we pass undistorted eye textures to the compositor for processing.
                 if (!wrapper || always_use_openvr_submit) {
-                    vr::Texture_t eye_texture = {};
-                    {
-                        eye_texture.eType = vr::TextureType_OpenGL;
-                        eye_texture.eColorSpace = vr::ColorSpace_Linear;
-                    }
-
-                    vr::VRTextureBounds_t bounds = {};
-                    {
-                        bounds.uMin = 0.0;
-                        bounds.vMin = 0.0;
-                        bounds.uMax = 1.0;
-                        bounds.vMax = 1.0;
-                    }
-
                     for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
+                        bounds[eye_index].uMin = 0.0;
+                        bounds[eye_index].uMax = 1.0;
+
+                        eye_textures[eye_index].eColorSpace = vr::ColorSpace_Linear;
+
                         if (eye_index == vr::Eye_Left) {
-                            eye_texture.handle = reinterpret_cast<void*>(uintptr_t(support_color_attachment_copy));
+                            eye_textures[eye_index].handle = reinterpret_cast<void*>(uintptr_t(support_color_attachment_copy));
                         }
                         else {
-                            eye_texture.handle = reinterpret_cast<void*>(uintptr_t(primary_color_attachment));
-                        }
-
-                        const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_texture, &bounds, vr::Submit_Default);
-
-                        if (error != vr::VRCompositorError_None) {
-                            std::cerr << "Error: " << error << std::endl;
+                            eye_textures[eye_index].handle = reinterpret_cast<void*>(uintptr_t(primary_color_attachment));
                         }
                     }
-
-                    glFlush();
                 }
                 //------------------------------------------------------------------------------
                 // If we are using the wrapper but submit to display through the OpenVR
@@ -1972,38 +2000,32 @@ namespace {
 
                     //------------------------------------------------------------------------------
                     // Submit pre-processed (distortion/color) eye textures to the OpenVR compositor.
-                    vr::Texture_t eye_texture = {};
-                    {
-                        eye_texture.handle = reinterpret_cast<void*>(uintptr_t(openvr_compositor_color_attachment));
-                        eye_texture.eType = vr::TextureType_OpenGL;
-                        eye_texture.eColorSpace = vr::ColorSpace_Gamma;
-                    }
-
-                    vr::VRTextureBounds_t bounds = {};
-                    {
-                        bounds.vMin = 0.0;
-                        bounds.vMax = 1.0;
-                    }
+                    submit_flags = vr::Submit_LensDistortionAlreadyApplied;
 
                     for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
                         if (eye_index == vr::Eye_Left) {
-                            bounds.uMin = 0.0;
-                            bounds.uMax = 0.5;
+                            bounds[eye_index].uMin = 0.0;
+                            bounds[eye_index].uMax = 0.5;
                         }
                         else {
-                            bounds.uMin = 0.5;
-                            bounds.uMax = 1.0;
+                            bounds[eye_index].uMin = 0.5;
+                            bounds[eye_index].uMax = 1.0;
                         }
 
-                        const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_texture, &bounds, vr::Submit_LensDistortionAlreadyApplied);
-
-                        if (error != vr::VRCompositorError_None) {
-                            std::cerr << "Error: " << error << std::endl;
-                        }
+                        eye_textures[eye_index].eColorSpace = vr::ColorSpace_Gamma;
+                        eye_textures[eye_index].handle = reinterpret_cast<void*>(uintptr_t(openvr_compositor_color_attachment));
                     }
-
-                    glFlush();
                 }
+
+                for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
+                    const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_textures[eye_index], &bounds[eye_index], submit_flags);
+
+                    if (error != vr::VRCompositorError_None) {
+                        std::cerr << "Error: " << error << std::endl;
+                    }
+                }
+
+                glFlush();
             }
 
             time += (1.0 / 90.0);
@@ -2255,12 +2277,20 @@ main(int argc, const char* argv[])
             pixel_format_desc.cColorBits = 24;
         };
 
+        //------------------------------------------------------------------------------
+        // Select stereo display.
         if (display_configuration.openvr_display() && (always_use_openvr || !display_configuration.mosaic_display())) {
             stereo_display = display_configuration.openvr_display();
 
             if (!display_configuration.openvr_display_in_direct_mode()) {
+                std::cout << "Using the OpenVR display in exended mode ";
+                
                 if (!always_use_openvr_compositor) {
+                    std::cout << "through an application window" << std::endl;
                     stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
+                }
+                else {
+                    std::cout << "through the OpenVR compositor" << std::endl;
                 }
 
                 //------------------------------------------------------------------------------
@@ -2277,14 +2307,21 @@ main(int argc, const char* argv[])
                     }
                 }
             }
+            else {
+                std::cout << "Using OpenVR display in direct mode" << std::endl;
+            }
         }
         else {
             stereo_display = display_configuration.mosaic_display();
             stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
+
+            std::cout << "Using the Mosaic display" << std::endl;
         }
 
         std::cout << "Stereo display: " << (*stereo_display) << std::endl;
 
+        //------------------------------------------------------------------------------
+        // Create render contexts.
         create_render_contexts(stereo_display, pixel_format_desc);
 
         //------------------------------------------------------------------------------
