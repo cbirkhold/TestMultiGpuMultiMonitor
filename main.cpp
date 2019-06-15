@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <deque>
 #include <future>
@@ -73,6 +74,593 @@
 
 #include "CppUtilities.h"
 #include "OpenGLUtilities.h"
+
+//
+//  StereoDisplay.h
+//  vmi-vive
+//
+//  Created by Chris Birkhold on 2/4/19.
+//
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#ifndef __STEREO_DISPLAY_H__
+#define __STEREO_DISPLAY_H__
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#include <chrono>
+#include <memory>
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//------------------------------------------------------------------------------
+// Minimal interface to an OpenGL stereo display drawable.
+//
+// Access to a framebuffer for each eye (which may be the same for both) and a
+// viewport into each (or the shared) framebuffer is provided. After rendering
+// to a drawable is complete submit() must be called.
+//
+// See StereoDisplay::wait_next_drawable() for details on requesting a drawable.
+//------------------------------------------------------------------------------
+
+class StereoDrawable
+{
+public:
+
+    enum EyeIndex_e {
+        EYE_INDEX_LEFT = 0,
+        EYE_INDEX_RIGHT = 1,
+    };
+
+public:
+
+    virtual ~StereoDrawable() {}
+
+protected:
+
+    StereoDrawable() {}
+
+public:
+
+    //------------------------------------------------------------------------------
+    // Return the framebuffer name associated with the given eye. If the drawable
+    // itself or the eye index are invalid return -1. If a valid framebuffer is
+    // returned a valid viewport must also be available. An implementation may
+    // return the same name for both eyes if they share a single framebuffer.
+    virtual GLuint framebuffer(size_t eye_index) const noexcept = 0;
+
+    //------------------------------------------------------------------------------
+    // Return the viewport into the framebuffer associated with the given eye in
+    // pixels. If the drawable itself or the eye index are invalid return all zeros.
+    // If a valid viewport is returned a valid framebuffer must also be available.
+    virtual glm::ivec4 viewport(size_t eye_index) const noexcept = 0;
+
+    //------------------------------------------------------------------------------
+    // Bind the framebuffer with the given index and return true if successful or
+    // false otherwise. If a single framebuffer is shared between the eyes the
+    // scissor rect must be set to match the viewport and scissor testing enabled,
+    // otherwise setting the scissor is optional.
+    virtual bool bind(size_t eye_index, bool always_set_scissor = false) noexcept
+    {
+        const GLuint framebuffer_ = framebuffer(eye_index);
+
+        if (framebuffer_ == GLuint(-1)) {
+            return false;
+        }
+
+        glm::ivec4 viewport_ = viewport(eye_index);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer_);
+        glViewport(viewport_.x, viewport_.y, viewport_.z, viewport_.w);
+
+        if (always_set_scissor || (framebuffer_ == framebuffer(eye_index == 0 ? 1 : 0))) {
+            glScissor(viewport_.x, viewport_.y, viewport_.z, viewport_.w);
+            glEnable(GL_SCISSOR_TEST);
+        }
+        else {
+            glDisable(GL_SCISSOR_TEST);
+        }
+
+        return true;
+    }
+
+public:
+
+    //------------------------------------------------------------------------------
+    // Submit the drawable for display.
+    virtual bool submit() = 0;
+};
+
+typedef std::unique_ptr<StereoDrawable> StereoDrawable_UP;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//------------------------------------------------------------------------------
+// Minimal interface to a stereo display.
+//
+// Implementations are free to not return another drawable until the previously
+// requested one was submitted if fully serialized rendering is required.
+//
+// The drawable may only conceptually be a drawable but not the actual final
+// drawable presented to the display. Instead the drawable may be used as input
+// to a post-processing step involving a distortion and/or color correction
+// transform into the final surface.
+//------------------------------------------------------------------------------
+
+class StereoDisplay
+{
+public:
+
+    virtual ~StereoDisplay() {}
+
+protected:
+
+    StereoDisplay() {}
+
+public:
+
+    virtual StereoDrawable_UP wait_next_drawable() const
+    {
+        StereoDrawable_UP drawable;
+        bool try_failed = true;
+
+        while (try_failed) {
+            drawable = wait_next_drawable_for(std::chrono::seconds(1), &try_failed);
+            assert(!(drawable && try_failed));
+        }
+
+        return drawable;
+    }
+
+    virtual StereoDrawable_UP wait_next_drawable_for(const std::chrono::microseconds& duration, bool* try_failed = nullptr) const = 0;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//------------------------------------------------------------------------------
+// Minimal interface to a pose tracker (such as an HMD and its controllers).
+//
+// Enables waiting for the next display pose to become available. This would
+// usually be called right before requesting the next drawable to obtain the
+// most accurate display pose for rendering the next frame.
+//------------------------------------------------------------------------------
+
+class PoseTracker
+{
+public:
+
+    virtual ~PoseTracker() {}
+
+protected:
+
+    PoseTracker() {}
+
+public:
+
+    virtual bool wait_get_poses() const noexcept = 0;
+    virtual const glm::mat4 hmd_pose() const noexcept = 0;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#endif // __STEREO_DISPLAY_H__
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//------------------------------------------------------------------------------
+// Utility for serializing rendering and submission of render targets.
+//
+// We use this to track if the render target is currently owned by the client or
+// the display, and if by the client by which thread. Also, by using a mutex we
+// can wait with a timeout.
+class AcquireReleaseWithOwnership
+{
+    //------------------------------------------------------------------------------
+    // Types
+public:
+
+    //------------------------------------------------------------------------------
+    // Enum 'class' with bool cast operator.
+    class AcquireResult
+    {
+    public:
+
+        enum result_e {
+            OK = 0,
+
+            // Error: The object is already owned by the current thread. This is usually a
+            //        logica error, to avoid a deadlock the operation fails.
+            ALREADY_OWNED,
+
+            // Error: Trying to acquire the object failed because it is already owned by
+            //        another thread, the timeout expired or the try failed spuriously.
+            TRY_FAILED,
+        };
+
+        constexpr AcquireResult(result_e value) noexcept : m_value(value) {}
+
+        constexpr operator result_e() const noexcept { return m_value; }
+        constexpr operator bool() const noexcept { return (m_value == OK); }
+
+    private:
+
+        const result_e      m_value;
+    };
+
+    typedef std::recursive_timed_mutex Mutex;
+
+    //------------------------------------------------------------------------------
+    // Acquire/Release
+public:
+
+    //------------------------------------------------------------------------------
+    // Return true if the render target was successfully acquired or false if the
+    // render target is already owned by the current thread. Blocks execution until
+    // the lock is acquired.
+    AcquireResult acquire() const
+    {
+        std::unique_lock<Mutex> lock(m_mutex);
+        return acquire(lock);
+    }
+
+    //------------------------------------------------------------------------------
+    // Return true if the render target was successfully acquired or false if the
+    // render target is already owned, including by the current thread.
+    AcquireResult try_acquire() const noexcept
+    {
+        std::unique_lock<Mutex> lock(m_mutex, std::try_to_lock);
+
+        if (!lock.owns_lock()) {
+            return AcquireResult::TRY_FAILED;
+        }
+
+        return acquire(lock);
+    }
+
+    //------------------------------------------------------------------------------
+    // Return true if the render target was successfully acquired or false if the
+    // render target is already owned, including by the current thread. Blocks
+    // execution until the lock is acquired or the timeout expires.
+    AcquireResult try_acquire_for(const std::chrono::microseconds& duration) const
+    {
+        std::unique_lock<Mutex> lock(m_mutex, duration);
+
+        if (!lock.owns_lock()) {
+            return AcquireResult::TRY_FAILED;
+        }
+
+        return acquire(lock);
+    }
+
+    //------------------------------------------------------------------------------
+    // Release ownership of the render target.
+    void release() const noexcept;
+
+    //------------------------------------------------------------------------------
+    // Returns true if the render target is owned by the current thread or false
+    // otherwise.
+    //
+    // While it's not meaningful to determine the arbitrary owner of a mutex it is
+    // possible to answer the more narrow question if a recursive mutex is owned by
+    // the current thread. To do so we try to lock the mutex which will fail if the
+    // mutex is owned by a different thread but succeed if the mutex was not owned
+    // by any thread or already owned by the current thread.
+    bool owned_by_this_thread() const noexcept
+    {
+        std::unique_lock<Mutex> lock(m_mutex, std::try_to_lock);
+        return (lock.owns_lock() && (m_mutex_owner == std::this_thread::get_id()));
+    }
+
+    //------------------------------------------------------------------------------
+    // [Lockable]
+public:
+
+    void lock() const { if (!acquire()) { throw std::runtime_error("Already locked by this thread!"); } }
+    bool try_lock() const noexcept { return try_acquire(); }
+    void unlock() const noexcept { release(); }
+
+    //------------------------------------------------------------------------------
+    // {Private}
+private:
+
+    mutable Mutex               m_mutex;
+    mutable std::thread::id     m_mutex_owner;
+
+    AcquireResult acquire(std::unique_lock<Mutex>& lock) const noexcept;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+void create_texture_backed_render_targets(
+    GLuint* const framebuffers,
+    GLuint* const color_attachments,
+    GLuint* const depth_attachments,
+    size_t n,
+    size_t width,
+    size_t height)
+{
+    glGenFramebuffers(GLsizei(n), framebuffers);
+    glGenTextures(GLsizei(n), color_attachments);
+
+    if (depth_attachments) {
+        glGenRenderbuffers(GLsizei(n), depth_attachments);
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[i]);
+        glBindTexture(GL_TEXTURE_2D, color_attachments[i]);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(width), GLsizei(height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_attachments[i], 0);
+
+        if (depth_attachments) {
+            glBindRenderbuffer(GL_RENDERBUFFER, depth_attachments[i]);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH32F_STENCIL8, GLsizei(width), GLsizei(height));
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_attachments[i]);
+        }
+
+        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            throw std::runtime_error("Failed to validate framebuffer status!");
+        }
+    }
+}
+
+void delete_texture_backed_render_targets(
+    GLuint* const framebuffers,
+    GLuint* const color_attachments,
+    GLuint* const depth_attachments,
+    size_t n)
+{
+    if (depth_attachments) {
+        glDeleteTextures(GLsizei(n), depth_attachments);
+        memset(depth_attachments, 0, (n * sizeof(depth_attachments[0])));
+    }
+
+    glDeleteTextures(GLsizei(n), color_attachments);
+    memset(color_attachments, 0, (n * sizeof(color_attachments[0])));
+
+    glDeleteFramebuffers(GLsizei(n), framebuffers);
+    memset(framebuffers, 0, (n * sizeof(framebuffers[0])));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class WrapperRenderTarget : public AcquireReleaseWithOwnership
+{
+    //------------------------------------------------------------------------------
+     // Construction/Destruction
+public:
+
+    WrapperRenderTarget()
+    : m_width(0)
+    , m_height(0)
+    {
+    }
+
+    WrapperRenderTarget(size_t width, size_t height/*, bool srgb*/)
+    : m_width(width)
+    , m_height(height)
+    {
+        if ((width == 0) || (height == 0)) {
+            throw std::runtime_error("Valid render target size expected!");
+        }
+
+        create_texture_backed_render_targets(m_framebuffers.data(), m_color_attachments.data(), nullptr, 2, m_width, m_height);
+    }
+
+    ~WrapperRenderTarget()
+    {
+        if (valid()) {
+            delete_texture_backed_render_targets(m_framebuffers.data(), m_color_attachments.data(), nullptr, 2);
+        }
+    }
+
+    //------------------------------------------------------------------------------
+    // Framebuffers
+public:
+
+    bool valid() const noexcept { return (m_width > 0 ? true : false); }
+
+    size_t width() const noexcept { return m_width; }
+    size_t height() const noexcept { return m_height; }
+
+    GLuint framebuffer(size_t eye_index) const { return m_framebuffers[eye_index]; }
+    GLuint color_attachment(size_t eye_index) const { return m_color_attachments[eye_index]; }
+
+    //------------------------------------------------------------------------------
+    // {Private}
+private:
+
+    const size_t                    m_width;                    // Width of the framebuffers
+    const size_t                    m_height;                   // Height of the framebuffers
+
+    std::array<GLuint, 2>           m_framebuffers = {};        // Framebuffers
+    std::array<GLuint, 2>           m_color_attachments = {};   // Framebuffer color attachments
+}; 
+
+class WrapperDrawable : public StereoDrawable
+{
+    //------------------------------------------------------------------------------
+    // Construction/Destruction
+public:
+
+    //------------------------------------------------------------------------------
+    // Create the drawable and acquire the given render target until submit() is
+    // called at which point the render target is released, success or not.
+    WrapperDrawable(std::shared_ptr<HWW::HWWrapper> wrapper, std::shared_ptr<const WrapperRenderTarget> render_target, double audio_timestamp)
+    : m_wrapper(std::move(wrapper))
+    , m_render_target(std::move(render_target))
+    , m_audio_timestamp(audio_timestamp)
+    {
+        m_viewport = glm::ivec4(0, 0, m_render_target->width(), m_render_target->height());
+        
+        if (!m_wrapper) {
+            throw std::runtime_error("Valid wrapper expected!");
+        }
+
+        if (!m_render_target || !m_render_target->valid()) {
+            throw std::runtime_error("Valid render target expected!");
+        }
+
+        assert(m_render_target->owned_by_this_thread());
+    }
+
+    //------------------------------------------------------------------------------
+    // [StereoDrawable]
+public:
+
+    //------------------------------------------------------------------------------
+    // Returns the OpenGL framebuffer name for the given eye or -1 if submit() was
+    // called prior and the drawable is thus no longer considered valid.
+    GLuint framebuffer(size_t eye_index) const noexcept override { return ((eye_index < 2) && m_render_target ? m_render_target->framebuffer(eye_index) : GLuint(-1)); }
+
+    //------------------------------------------------------------------------------
+    // Returns the viewport (in pixels) for the given eye or zeros if submit() was
+    // called prior and the drawable is thus no longer considered valid.
+    glm::ivec4 viewport(size_t eye_index) const noexcept override { return ((eye_index < 2) && m_render_target ? m_viewport : glm::ivec4(0)); }
+
+    //------------------------------------------------------------------------------
+    // Returns true if both eyes were submitted successfully or false otherwise.
+    // The drawable will be invalid after calling submit() in either case. glFlush()
+    // is called upon successful submission of both eyes as recommended by the
+    // OpenVR spec for use with OpenGL.
+    bool submit() override
+    {
+        std::shared_ptr<const WrapperRenderTarget> render_target = std::atomic_exchange(&m_render_target, s_invalid_render_target);
+        assert(!m_render_target->valid());
+
+        if (!render_target->valid()) {
+            return false;
+        }
+
+        m_wrapper->Render(render_target->color_attachment(0), render_target->color_attachment(1), float(m_audio_timestamp));
+
+        return true;
+    }
+
+    //------------------------------------------------------------------------------
+    // {Private}
+private:
+
+    static std::shared_ptr<const WrapperRenderTarget>       s_invalid_render_target;
+
+    const std::shared_ptr<HWW::HWWrapper>           m_wrapper;
+    const double                                    m_audio_timestamp;
+
+    std::shared_ptr<const WrapperRenderTarget>      m_render_target;
+    glm::ivec4                                      m_viewport = {};
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+std::shared_ptr<const WrapperRenderTarget> WrapperDrawable::s_invalid_render_target(new WrapperRenderTarget());
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class WrapperDisplay
+    : public StereoDisplay
+    , public PoseTracker
+{
+    //------------------------------------------------------------------------------
+     // Configuration/Types
+public:
+
+    static constexpr bool FAIL_IF_WATCHDOG_EXPIRES = false;
+
+    //------------------------------------------------------------------------------
+    // Construction/Destruction
+public:
+
+    WrapperDisplay(std::shared_ptr<HWW::HWWrapper> wrapper, size_t width, size_t height)
+    : m_wrapper(std::move(wrapper))
+    , m_render_target(new WrapperRenderTarget(width, height))
+    {
+    }
+
+    //------------------------------------------------------------------------------
+    // Audio Timestamps
+public:
+
+    void set_audio_timestamp(double timestamp) { m_audio_timestamp = timestamp; }
+
+    //------------------------------------------------------------------------------
+    // [StereoDisplay]
+public:
+
+    StereoDrawable_UP wait_next_drawable() const
+    {
+        if (!m_render_target->acquire()) {
+            return nullptr;
+        }
+
+        return StereoDrawable_UP(new WrapperDrawable(m_wrapper, m_render_target, m_audio_timestamp));
+    }
+
+    StereoDrawable_UP wait_next_drawable_for(const std::chrono::microseconds& duration, bool* const try_failed) const override
+    {
+        const AcquireReleaseWithOwnership::AcquireResult result = m_render_target->try_acquire_for(duration);
+
+        if (try_failed) {
+            (*try_failed) = (result == AcquireReleaseWithOwnership::AcquireResult::TRY_FAILED);
+        }
+
+        if (!result) {
+            return nullptr;
+        }
+
+        return StereoDrawable_UP(new WrapperDrawable(m_wrapper, m_render_target, m_audio_timestamp));
+    }
+
+    //------------------------------------------------------------------------------
+    // [PoseTracker]
+public:
+
+    bool wait_get_poses() const noexcept override
+    {
+        return true;
+    }
+
+    const glm::mat4 hmd_pose() const noexcept override
+    {
+        glm::vec3 hmd_position;
+        glm::quat hmd_orientation;
+
+        if (!m_wrapper->GetHMDPose(hmd_position, hmd_orientation)) {
+            return glm::mat4(1.0);
+        }
+
+        const glm::mat4 hmd_rotation = glm::mat4_cast(glm::normalize(hmd_orientation));
+        const glm::mat4 hmd_translation = glm::translate(glm::mat4(1.0), hmd_position);
+
+        return (hmd_translation * hmd_rotation);
+    }
+
+    //------------------------------------------------------------------------------
+    // {Private}
+private:
+
+    const std::shared_ptr<HWW::HWWrapper>           m_wrapper;                  // Wrapper shared with the application
+    std::shared_ptr<const WrapperRenderTarget>      m_render_target;            // Render target shared with the WrapperDrawable instance
+    double                                          m_audio_timestamp = 0.0;    // Timestamp for audio synchronization
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1347,61 +1935,6 @@ namespace {
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
-    void create_texture_backed_render_targets(
-        GLuint* const framebuffers,
-        GLuint* const color_attachments,
-        GLuint* const depth_attachments,
-        size_t n,
-        size_t width,
-        size_t height)
-    {
-        glGenFramebuffers(GLsizei(n), framebuffers);
-        glGenTextures(GLsizei(n), color_attachments);
-
-        if (depth_attachments) {
-            glGenRenderbuffers(GLsizei(n), depth_attachments);
-        }
-
-        for (size_t i = 0; i < n; ++i) {
-            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[i]);
-            glBindTexture(GL_TEXTURE_2D, color_attachments[i]);
-
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(width), GLsizei(height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_attachments[i], 0);
-
-            if (depth_attachments) {
-                glBindRenderbuffer(GL_RENDERBUFFER, depth_attachments[i]);
-                glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH32F_STENCIL8, GLsizei(width), GLsizei(height));
-                glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_attachments[i]);
-            }
-
-            const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-
-            if (status != GL_FRAMEBUFFER_COMPLETE) {
-                throw std::runtime_error("Failed to validate framebuffer status!");
-            }
-        }
-    }
-
-    void delete_texture_backed_render_targets(
-        GLuint* const framebuffers,
-        GLuint* const color_attachments,
-        size_t n)
-    {
-        glDeleteTextures(GLsizei(n), color_attachments);
-        glDeleteFramebuffers(GLsizei(n), framebuffers);
-
-        memset(color_attachments, 0, (n * sizeof(color_attachments[0])));
-        memset(framebuffers, 0, (n * sizeof(framebuffers[0])));
-    }
-
-    ////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////////////////////////////////////////////////////////
-
     class RenderPoints
     {
     public:
@@ -1511,8 +2044,8 @@ namespace {
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
-    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_WIDTH = 1024;
-    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_HEIGHT = 1024;
+    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_WIDTH = 2048;
+    constexpr size_t PER_GPU_PASS_FRAMEBUFFER_HEIGHT = 2048;
 
     constexpr size_t PRIMARY_CONTEXT_INDEX = 0;
     constexpr size_t SUPPORT_CONTEXT_INDEX = 1;
@@ -1623,14 +2156,14 @@ namespace {
         // Support context objects.
         //------------------------------------------------------------------------------
 
-        delete_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, 1);
+        delete_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, nullptr, 1);
 
         //------------------------------------------------------------------------------
         // Primary context objects.
         //------------------------------------------------------------------------------
 
-        delete_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, 1);
-        delete_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, 1);
+        delete_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, nullptr, 1);
+        delete_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1);
     }
 
     void render_loop()
@@ -1782,7 +2315,7 @@ namespace {
 
             //------------------------------------------------------------------------------
             // Copy result of support context to primary context.
-            if ((1)) {
+            if ((0)) {
                 constexpr size_t NUM_TILES = 8;
 
                 for (size_t v = 0; v < 1/*NUM_TILES*/; ++v) {
