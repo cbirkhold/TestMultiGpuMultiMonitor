@@ -2194,6 +2194,8 @@ main(int argc, const char* argv[])
             std::cerr << "Failed to initialize wrapper: Unknown exception!" << std::endl;
             return EXIT_FAILURE;
         }
+
+        std::cout << "Using the wrapper" << std::endl;
     }
     else if (vr::VR_IsRuntimeInstalled() && vr::VR_IsHmdPresent()) {
         vr::EVRInitError error = vr::VRInitError_None;
@@ -2207,6 +2209,8 @@ main(int argc, const char* argv[])
         atexit([]() {
             vr::VR_Shutdown();
         });
+
+        std::cout << "NOT using the wrapper" << std::endl;
     }
 
     //------------------------------------------------------------------------------
