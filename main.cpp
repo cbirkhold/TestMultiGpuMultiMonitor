@@ -23,7 +23,7 @@
 // Platform
 //------------------------------------------------------------------------------
 
-#include <Windows.h>
+#include "_WindowsApi.h"
 #include <dxgi1_6.h>
 #include <wrl.h>
 
@@ -31,36 +31,19 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //------------------------------------------------------------------------------
+// GLEW (OpenGL), GLFW, GLM, OpenVR
+//------------------------------------------------------------------------------
+
+#include "_GLEWApi.h"
+#include "_GLFWApi.h"
+#include "_GLMApi.h"
+#include "_OpenVRApi.h"
+
+//------------------------------------------------------------------------------
 // NVAPI
 //------------------------------------------------------------------------------
 
 #include <nvapi.h>
-
-//------------------------------------------------------------------------------
-// GLEW
-//------------------------------------------------------------------------------
-
-#include <GL/glew.h>
-#include <GL/wglew.h>
-
-//------------------------------------------------------------------------------
-// GLFW
-//------------------------------------------------------------------------------
-
-#include <GLFW/glfw3.h>
-
-//------------------------------------------------------------------------------
-// GLM
-//------------------------------------------------------------------------------
-
-#include <glm/glm.hpp>
-#include <glm/ext.hpp>
-
-//------------------------------------------------------------------------------
-// OpenVR
-//------------------------------------------------------------------------------
-
-#include <openvr.h>
 
 //------------------------------------------------------------------------------
 // Apple
@@ -74,308 +57,8 @@
 
 #include "CppUtilities.h"
 #include "OpenGLUtilities.h"
-
-//
-//  StereoDisplay.h
-//  vmi-vive
-//
-//  Created by Chris Birkhold on 2/4/19.
-//
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#ifndef __STEREO_DISPLAY_H__
-#define __STEREO_DISPLAY_H__
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#include <chrono>
-#include <memory>
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-//------------------------------------------------------------------------------
-// Minimal interface to an OpenGL stereo display drawable.
-//
-// Access to a framebuffer for each eye (which may be the same for both) and a
-// viewport into each (or the shared) framebuffer is provided. After rendering
-// to a drawable is complete submit() must be called.
-//
-// See StereoDisplay::wait_next_drawable() for details on requesting a drawable.
-//------------------------------------------------------------------------------
-
-class StereoDrawable
-{
-public:
-
-    enum EyeIndex_e {
-        EYE_INDEX_LEFT = 0,
-        EYE_INDEX_RIGHT = 1,
-    };
-
-public:
-
-    virtual ~StereoDrawable() {}
-
-protected:
-
-    StereoDrawable() {}
-
-public:
-
-    //------------------------------------------------------------------------------
-    // Return the framebuffer name associated with the given eye. If the drawable
-    // itself or the eye index are invalid return -1. If a valid framebuffer is
-    // returned a valid viewport must also be available. An implementation may
-    // return the same name for both eyes if they share a single framebuffer.
-    virtual GLuint framebuffer(size_t eye_index) const noexcept = 0;
-
-    //------------------------------------------------------------------------------
-    // Return the viewport into the framebuffer associated with the given eye in
-    // pixels. If the drawable itself or the eye index are invalid return all zeros.
-    // If a valid viewport is returned a valid framebuffer must also be available.
-    virtual glm::ivec4 viewport(size_t eye_index) const noexcept = 0;
-
-    //------------------------------------------------------------------------------
-    // Bind the framebuffer with the given index and return true if successful or
-    // false otherwise. If a single framebuffer is shared between the eyes the
-    // scissor rect must be set to match the viewport and scissor testing enabled,
-    // otherwise setting the scissor is optional.
-    virtual bool bind(size_t eye_index, bool always_set_scissor = false) noexcept
-    {
-        const GLuint framebuffer_ = framebuffer(eye_index);
-
-        if (framebuffer_ == GLuint(-1)) {
-            return false;
-        }
-
-        glm::ivec4 viewport_ = viewport(eye_index);
-
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer_);
-        glViewport(viewport_.x, viewport_.y, viewport_.z, viewport_.w);
-
-        if (always_set_scissor || (framebuffer_ == framebuffer(eye_index == 0 ? 1 : 0))) {
-            glScissor(viewport_.x, viewport_.y, viewport_.z, viewport_.w);
-            glEnable(GL_SCISSOR_TEST);
-        }
-        else {
-            glDisable(GL_SCISSOR_TEST);
-        }
-
-        return true;
-    }
-
-public:
-
-    //------------------------------------------------------------------------------
-    // Submit the drawable for display.
-    virtual bool submit() = 0;
-};
-
-typedef std::unique_ptr<StereoDrawable> StereoDrawable_UP;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-//------------------------------------------------------------------------------
-// Minimal interface to a stereo display.
-//
-// Implementations are free to not return another drawable until the previously
-// requested one was submitted if fully serialized rendering is required.
-//
-// The drawable may only conceptually be a drawable but not the actual final
-// drawable presented to the display. Instead the drawable may be used as input
-// to a post-processing step involving a distortion and/or color correction
-// transform into the final surface.
-//------------------------------------------------------------------------------
-
-class StereoDisplay
-{
-public:
-
-    virtual ~StereoDisplay() {}
-
-protected:
-
-    StereoDisplay() {}
-
-public:
-
-    virtual StereoDrawable_UP wait_next_drawable() const
-    {
-        StereoDrawable_UP drawable;
-        bool try_failed = true;
-
-        while (try_failed) {
-            drawable = wait_next_drawable_for(std::chrono::seconds(1), &try_failed);
-            assert(!(drawable && try_failed));
-        }
-
-        return drawable;
-    }
-
-    virtual StereoDrawable_UP wait_next_drawable_for(const std::chrono::microseconds& duration, bool* try_failed = nullptr) const = 0;
-};
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-//------------------------------------------------------------------------------
-// Minimal interface to a pose tracker (such as an HMD and its controllers).
-//
-// Enables waiting for the next display pose to become available. This would
-// usually be called right before requesting the next drawable to obtain the
-// most accurate display pose for rendering the next frame.
-//------------------------------------------------------------------------------
-
-class PoseTracker
-{
-public:
-
-    virtual ~PoseTracker() {}
-
-protected:
-
-    PoseTracker() {}
-
-public:
-
-    virtual bool wait_get_poses() const noexcept = 0;
-    virtual const glm::mat4 hmd_pose() const noexcept = 0;
-};
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#endif // __STEREO_DISPLAY_H__
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-//------------------------------------------------------------------------------
-// Utility for serializing rendering and submission of render targets.
-//
-// We use this to track if the render target is currently owned by the client or
-// the display, and if by the client by which thread. Also, by using a mutex we
-// can wait with a timeout.
-class AcquireReleaseWithOwnership
-{
-    //------------------------------------------------------------------------------
-    // Types
-public:
-
-    //------------------------------------------------------------------------------
-    // Enum 'class' with bool cast operator.
-    class AcquireResult
-    {
-    public:
-
-        enum result_e {
-            OK = 0,
-
-            // Error: The object is already owned by the current thread. This is usually a
-            //        logica error, to avoid a deadlock the operation fails.
-            ALREADY_OWNED,
-
-            // Error: Trying to acquire the object failed because it is already owned by
-            //        another thread, the timeout expired or the try failed spuriously.
-            TRY_FAILED,
-        };
-
-        constexpr AcquireResult(result_e value) noexcept : m_value(value) {}
-
-        constexpr operator result_e() const noexcept { return m_value; }
-        constexpr operator bool() const noexcept { return (m_value == OK); }
-
-    private:
-
-        const result_e      m_value;
-    };
-
-    typedef std::recursive_timed_mutex Mutex;
-
-    //------------------------------------------------------------------------------
-    // Acquire/Release
-public:
-
-    //------------------------------------------------------------------------------
-    // Return true if the render target was successfully acquired or false if the
-    // render target is already owned by the current thread. Blocks execution until
-    // the lock is acquired.
-    AcquireResult acquire() const
-    {
-        std::unique_lock<Mutex> lock(m_mutex);
-        return acquire(lock);
-    }
-
-    //------------------------------------------------------------------------------
-    // Return true if the render target was successfully acquired or false if the
-    // render target is already owned, including by the current thread.
-    AcquireResult try_acquire() const noexcept
-    {
-        std::unique_lock<Mutex> lock(m_mutex, std::try_to_lock);
-
-        if (!lock.owns_lock()) {
-            return AcquireResult::TRY_FAILED;
-        }
-
-        return acquire(lock);
-    }
-
-    //------------------------------------------------------------------------------
-    // Return true if the render target was successfully acquired or false if the
-    // render target is already owned, including by the current thread. Blocks
-    // execution until the lock is acquired or the timeout expires.
-    AcquireResult try_acquire_for(const std::chrono::microseconds& duration) const
-    {
-        std::unique_lock<Mutex> lock(m_mutex, duration);
-
-        if (!lock.owns_lock()) {
-            return AcquireResult::TRY_FAILED;
-        }
-
-        return acquire(lock);
-    }
-
-    //------------------------------------------------------------------------------
-    // Release ownership of the render target.
-    void release() const noexcept;
-
-    //------------------------------------------------------------------------------
-    // Returns true if the render target is owned by the current thread or false
-    // otherwise.
-    //
-    // While it's not meaningful to determine the arbitrary owner of a mutex it is
-    // possible to answer the more narrow question if a recursive mutex is owned by
-    // the current thread. To do so we try to lock the mutex which will fail if the
-    // mutex is owned by a different thread but succeed if the mutex was not owned
-    // by any thread or already owned by the current thread.
-    bool owned_by_this_thread() const noexcept
-    {
-        std::unique_lock<Mutex> lock(m_mutex, std::try_to_lock);
-        return (lock.owns_lock() && (m_mutex_owner == std::this_thread::get_id()));
-    }
-
-    //------------------------------------------------------------------------------
-    // [Lockable]
-public:
-
-    void lock() const { if (!acquire()) { throw std::runtime_error("Already locked by this thread!"); } }
-    bool try_lock() const noexcept { return try_acquire(); }
-    void unlock() const noexcept { release(); }
-
-    //------------------------------------------------------------------------------
-    // {Private}
-private:
-
-    mutable Mutex               m_mutex;
-    mutable std::thread::id     m_mutex_owner;
-
-    AcquireResult acquire(std::unique_lock<Mutex>& lock) const noexcept;
-};
+#include "StereoDisplay.h"
+#include "Utils.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -540,18 +223,16 @@ public:
     // The drawable will be invalid after calling submit() in either case. glFlush()
     // is called upon successful submission of both eyes as recommended by the
     // OpenVR spec for use with OpenGL.
-    bool submit() override
+    void submit() override
     {
         std::shared_ptr<const WrapperRenderTarget> render_target = std::atomic_exchange(&m_render_target, s_invalid_render_target);
         assert(!m_render_target->valid());
 
         if (!render_target->valid()) {
-            return false;
+            return;
         }
 
         m_wrapper->Render(render_target->color_attachment(0), render_target->color_attachment(1), float(m_audio_timestamp));
-
-        return true;
     }
 
     //------------------------------------------------------------------------------
@@ -633,9 +314,8 @@ public:
     // [PoseTracker]
 public:
 
-    bool wait_get_poses() const noexcept override
+    void wait_get_poses() override
     {
-        return true;
     }
 
     const glm::mat4 hmd_pose() const noexcept override
