@@ -55,71 +55,11 @@
 // Toolbox
 //------------------------------------------------------------------------------
 
-#include "CppUtilities.h"
-#include "OpenGLUtilities.h"
+#include "CppUtils.h"
+#include "OpenGLUtils.h"
+#include "OpenVRUtils.h"
 #include "StereoDisplay.h"
 #include "Utils.h"
-
-////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-
-void create_texture_backed_render_targets(
-    GLuint* const framebuffers,
-    GLuint* const color_attachments,
-    GLuint* const depth_attachments,
-    size_t n,
-    size_t width,
-    size_t height)
-{
-    glGenFramebuffers(GLsizei(n), framebuffers);
-    glGenTextures(GLsizei(n), color_attachments);
-
-    if (depth_attachments) {
-        glGenRenderbuffers(GLsizei(n), depth_attachments);
-    }
-
-    for (size_t i = 0; i < n; ++i) {
-        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[i]);
-        glBindTexture(GL_TEXTURE_2D, color_attachments[i]);
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(width), GLsizei(height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_attachments[i], 0);
-
-        if (depth_attachments) {
-            glBindRenderbuffer(GL_RENDERBUFFER, depth_attachments[i]);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH32F_STENCIL8, GLsizei(width), GLsizei(height));
-            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_attachments[i]);
-        }
-
-        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-
-        if (status != GL_FRAMEBUFFER_COMPLETE) {
-            throw std::runtime_error("Failed to validate framebuffer status!");
-        }
-    }
-}
-
-void delete_texture_backed_render_targets(
-    GLuint* const framebuffers,
-    GLuint* const color_attachments,
-    GLuint* const depth_attachments,
-    size_t n)
-{
-    if (depth_attachments) {
-        glDeleteTextures(GLsizei(n), depth_attachments);
-        memset(depth_attachments, 0, (n * sizeof(depth_attachments[0])));
-    }
-
-    glDeleteTextures(GLsizei(n), color_attachments);
-    memset(color_attachments, 0, (n * sizeof(color_attachments[0])));
-
-    glDeleteFramebuffers(GLsizei(n), framebuffers);
-    memset(framebuffers, 0, (n * sizeof(framebuffers[0])));
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -144,13 +84,13 @@ public:
             throw std::runtime_error("Valid render target size expected!");
         }
 
-        create_texture_backed_render_targets(m_framebuffers.data(), m_color_attachments.data(), nullptr, 2, m_width, m_height);
+        toolbox::OpenGLFramebuffer::create_texture_backed(m_framebuffers.data(), m_color_attachments.data(), nullptr, 2, m_width, m_height);
     }
 
     ~WrapperRenderTarget()
     {
         if (valid()) {
-            delete_texture_backed_render_targets(m_framebuffers.data(), m_color_attachments.data(), nullptr, 2);
+            toolbox::OpenGLFramebuffer::delete_texture_backed(m_framebuffers.data(), m_color_attachments.data(), nullptr, 2);
         }
     }
 
@@ -381,34 +321,6 @@ namespace {
     //------------------------------------------------------------------------------
     // Utilities
     //------------------------------------------------------------------------------
-
-    //------------------------------------------------------------------------------
-    // Convert a OpenVR 3x4 matrix to a glm 4x4 matrix.
-    glm::mat4 glm_from_hmd_matrix(const vr::HmdMatrix34_t& m)
-    {
-        static_assert(sizeof(m.m[0]) == sizeof(glm::vec4), "!");
-        static_assert(alignof(decltype(m.m[0])) == alignof(glm::vec4), "!");
-
-        return glm::transpose(glm::mat4(
-            (glm::vec4&)m.m[0],
-            (glm::vec4&)m.m[1],
-            (glm::vec4&)m.m[2],
-            glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)));
-    }
-
-    //------------------------------------------------------------------------------
-    // Convert a OpenVR 4x4 matrix to a glm 4x4 matrix.
-    glm::mat4 glm_from_hmd_matrix(const vr::HmdMatrix44_t& m)
-    {
-        static_assert(sizeof(m.m[0]) == sizeof(glm::vec4), "!");
-        static_assert(alignof(decltype(m.m[0])) == alignof(glm::vec4), "!");
-
-        return glm::transpose(glm::mat4(
-            (glm::vec4&)m.m[0],
-            (glm::vec4&)m.m[1],
-            (glm::vec4&)m.m[2],
-            (glm::vec4&)m.m[3]));
-    }
 
     const std::string NO_INDENT;
 
@@ -1810,7 +1722,7 @@ namespace {
 
         gl_init_debug_messages();
 
-        create_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        toolbox::OpenGLFramebuffer::create_texture_backed(&support_framebuffer, &support_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
         render_points_programs[SUPPORT_CONTEXT_INDEX] = RenderPoints::create_program();
 
         //------------------------------------------------------------------------------
@@ -1823,9 +1735,9 @@ namespace {
 
         gl_init_debug_messages();
 
-        create_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-        create_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-        create_texture_backed_render_targets(&openvr_compositor_framebuffer, &openvr_compositor_color_attachment, nullptr, 1, stereo_display->render_resolution().x, stereo_display->render_resolution().y);
+        toolbox::OpenGLFramebuffer::create_texture_backed(&primary_framebuffer, &primary_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        toolbox::OpenGLFramebuffer::create_texture_backed(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        toolbox::OpenGLFramebuffer::create_texture_backed(&openvr_compositor_framebuffer, &openvr_compositor_color_attachment, nullptr, 1, stereo_display->render_resolution().x, stereo_display->render_resolution().y);
 
         render_points_programs[PRIMARY_CONTEXT_INDEX] = RenderPoints::create_program();
     }
@@ -1836,14 +1748,15 @@ namespace {
         // Support context objects.
         //------------------------------------------------------------------------------
 
-        delete_texture_backed_render_targets(&support_framebuffer, &support_color_attachment, nullptr, 1);
+        toolbox::OpenGLFramebuffer::delete_texture_backed(&support_framebuffer, &support_color_attachment, nullptr, 1);
 
         //------------------------------------------------------------------------------
         // Primary context objects.
         //------------------------------------------------------------------------------
 
-        delete_texture_backed_render_targets(&primary_framebuffer, &primary_color_attachment, nullptr, 1);
-        delete_texture_backed_render_targets(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1);
+        toolbox::OpenGLFramebuffer::delete_texture_backed(&primary_framebuffer, &primary_color_attachment, nullptr, 1);
+        toolbox::OpenGLFramebuffer::delete_texture_backed(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1);
+        toolbox::OpenGLFramebuffer::delete_texture_backed(&openvr_compositor_framebuffer, &openvr_compositor_color_attachment, nullptr, 1);
     }
 
     void render_loop()
@@ -1921,7 +1834,7 @@ namespace {
                     }
 
                     if (tracked_device_index == vr::k_unTrackedDeviceIndex_Hmd) {
-                        hmd_pose = glm_from_hmd_matrix(render_pose.mDeviceToAbsoluteTracking);
+                        hmd_pose = OpenVRUtils::glm_from_hmd_matrix(render_pose.mDeviceToAbsoluteTracking);
                         break;
                     }
                 }
@@ -1933,13 +1846,13 @@ namespace {
                 bool ipd_changed = false;
 
                 for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
-                    eye_to_head_transforms[eye_index] = glm_from_hmd_matrix(vr_system->GetEyeToHeadTransform(vr::EVREye(eye_index)));
+                    eye_to_head_transforms[eye_index] = OpenVRUtils::glm_from_hmd_matrix(vr_system->GetEyeToHeadTransform(vr::EVREye(eye_index)));
 
                     if (eye_to_head_transforms[eye_index][3] != prev_eye_to_head_translation[eye_index]) {
                         ipd_changed = true;
                     }
 
-                    projection_matrices[eye_index] = glm_from_hmd_matrix(vr_system->GetProjectionMatrix(vr::EVREye(eye_index), near_z, far_z));
+                    projection_matrices[eye_index] = OpenVRUtils::glm_from_hmd_matrix(vr_system->GetProjectionMatrix(vr::EVREye(eye_index), near_z, far_z));
                     projection_matrices[eye_index] *= glm::inverse(eye_to_head_transforms[eye_index]);
 
                     prev_eye_to_head_translation[eye_index] = eye_to_head_transforms[eye_index][3];

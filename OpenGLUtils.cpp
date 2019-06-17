@@ -1,6 +1,6 @@
 //
-//  OpenGLUtilities.cpp
-//  OpenGLUtilities
+//  OpenGLUtils.cpp
+//  OpenGLUtils
 //
 //  Created by Chris Birkhold on 8/19/18.
 //  Copyright © 2018 Chris Birkhold. All rights reserved.
@@ -9,7 +9,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#include "OpenGLUtilities.h"
+#include "OpenGLUtils.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -22,9 +22,9 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #if defined(NDEBUG)
-#   define TOOLBOX_DEBUG 0
+# define TOOLBOX_DEBUG 0
 #else
-#   define TOOLBOX_DEBUG 1
+# define TOOLBOX_DEBUG 1
 #endif
 
 #define TOOLBOX_LOG_ERROR(...) printf(__VA_ARGS__)
@@ -71,6 +71,69 @@ namespace toolbox {
   ////////////////////////////////////////////////////////////////////////////////
   ////////////////////////////////////////////////////////////////////////////////
 
+  void
+  OpenGLFramebuffer::create_texture_backed(
+    GLuint* const framebuffers,
+    GLuint* const color_attachments,
+    GLuint* const depth_attachments,
+    size_t n,
+    size_t width,
+    size_t height)
+  {
+    glGenFramebuffers(GLsizei(n), framebuffers);
+    glGenTextures(GLsizei(n), color_attachments);
+
+    if (depth_attachments) {
+      glGenRenderbuffers(GLsizei(n), depth_attachments);
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+      glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[i]);
+      glBindTexture(GL_TEXTURE_2D, color_attachments[i]);
+
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(width), GLsizei(height), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color_attachments[i], 0);
+
+      if (depth_attachments) {
+        glBindRenderbuffer(GL_RENDERBUFFER, depth_attachments[i]);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH32F_STENCIL8, GLsizei(width), GLsizei(height));
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_attachments[i]);
+      }
+
+      const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+      if (status != GL_FRAMEBUFFER_COMPLETE) {
+        throw std::runtime_error("Failed to validate framebuffer status!");
+      }
+    }
+  }
+
+  void
+  OpenGLFramebuffer::delete_texture_backed(
+    GLuint* const framebuffers,
+    GLuint* const color_attachments,
+    GLuint* const depth_attachments,
+    size_t n)
+  {
+    if (depth_attachments) {
+      glDeleteTextures(GLsizei(n), depth_attachments);
+      memset(depth_attachments, 0, (n * sizeof(depth_attachments[0])));
+    }
+
+    glDeleteTextures(GLsizei(n), color_attachments);
+    memset(color_attachments, 0, (n * sizeof(color_attachments[0])));
+
+    glDeleteFramebuffers(GLsizei(n), framebuffers);
+    memset(framebuffers, 0, (n * sizeof(framebuffers[0])));
+  }
+
+  ////////////////////////////////////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////////////////////
+
   GLuint
   OpenGLShader::create_from_source(GLenum type, const std::string& source)
   {
@@ -97,10 +160,11 @@ namespace toolbox {
   ////////////////////////////////////////////////////////////////////////////////
 
   GLuint
-  OpenGLProgram::create_from_shaders(GLuint vertex_shader,
-                                     GLuint fragment_shader,
-                                     attribute_location_list_t& attribute_locations,
-                                     frag_data_location_list_t& frag_data_locations)
+  OpenGLProgram::create_from_shaders(
+    GLuint vertex_shader,
+    GLuint fragment_shader,
+    attribute_location_list_t& attribute_locations,
+    frag_data_location_list_t& frag_data_locations)
   {
     std::set<GLint> used_indices;
 
@@ -203,7 +267,7 @@ namespace toolbox {
       const GLint location = glGetAttribLocation(program, attribute_name.c_str());
 
       if (location >= 0) {
-          active_attribute_locations.emplace_back(location, attribute_name);
+        active_attribute_locations.emplace_back(location, attribute_name);
       }
     }
 

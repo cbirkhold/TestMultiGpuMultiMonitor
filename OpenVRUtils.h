@@ -36,6 +36,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#include "_GLMApi.h"
 #include "_OpenVRApi.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -59,6 +60,36 @@ public:
                                                  vr::TrackedDeviceIndex_t device_index,
                                                  vr::TrackedDeviceProperty property,
                                                  vr::TrackedPropertyError* const error = nullptr);
+
+public:
+
+    //------------------------------------------------------------------------------
+    // Convert a OpenVR 3x4 matrix to a glm 4x4 matrix.
+    static glm::mat4 glm_from_hmd_matrix(const vr::HmdMatrix34_t& m)
+    {
+        static_assert(sizeof(m.m[0]) == sizeof(glm::vec4), "!");
+        static_assert(alignof(decltype(m.m[0])) == alignof(glm::vec4), "!");
+
+        return glm::transpose(glm::mat4(
+            (glm::vec4&)m.m[0],
+            (glm::vec4&)m.m[1],
+            (glm::vec4&)m.m[2],
+            glm::vec4(0.0f, 0.0f, 0.0f, 1.0f)));
+    }
+
+    //------------------------------------------------------------------------------
+    // Convert a OpenVR 4x4 matrix to a glm 4x4 matrix.
+    static glm::mat4 glm_from_hmd_matrix(const vr::HmdMatrix44_t& m)
+    {
+        static_assert(sizeof(m.m[0]) == sizeof(glm::vec4), "!");
+        static_assert(alignof(decltype(m.m[0])) == alignof(glm::vec4), "!");
+
+        return glm::transpose(glm::mat4(
+            (glm::vec4&)m.m[0],
+            (glm::vec4&)m.m[1],
+            (glm::vec4&)m.m[2],
+            (glm::vec4&)m.m[3]));
+    }
 
 public:
 
