@@ -1357,7 +1357,7 @@ namespace {
                 std::cerr << "Exception: " << e.what() << std::endl;
             }
             catch (...) {
-                std::cerr << "Faile to load program: Unknown exception!" << std::endl;
+                std::cerr << "Failed to load program: Unknown exception!" << std::endl;
             }
 
             return 0;
@@ -1932,7 +1932,7 @@ namespace {
             std::cerr << "Exception: " << e.what() << std::endl;
         }
         catch (...) {
-            std::cerr << "Faile to terminate render thread: Unknown exception!" << std::endl;
+            std::cerr << "Failed to terminate render thread: Unknown exception!" << std::endl;
         }
     }
 
@@ -2025,7 +2025,7 @@ main(int argc, const char* argv[])
     std::cout << "GLFW: " << glfwGetVersionString() << std::endl;
 
     if ((glfw_version_major < 3) || ((glfw_version_major == 3) && (glfw_version_minor < 3))) {
-        std::cerr << "Error: GLFW 3.3 or newer exepcted!" << std::endl;
+        std::cerr << "Error: GLFW 3.3 or newer expected!" << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -2074,6 +2074,7 @@ main(int argc, const char* argv[])
 
     //------------------------------------------------------------------------------
     // Keep log a bit cleaner by giving the VR sytstem a chance to complete its
+    // Keep log a bit cleaner by giving the VR system a chance to complete its
     // asynchronous startup before we go on.
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
@@ -2131,6 +2132,7 @@ main(int argc, const char* argv[])
             //------------------------------------------------------------------------------
             // "For RGBA pixel types, it is the size of the color buffer, excluding the
             // alpha bitplanes." [PIXELFORMATDESCRIPTOR documentation]
+            // alpha bit planes." [PIXELFORMATDESCRIPTOR documentation]
             pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
             pixel_format_desc.cColorBits = 24;
         };
