@@ -228,7 +228,7 @@ WrapperDisplay::projection_matrix(size_t eye_index, double near_z, double far_z)
         return m_wrapper->GetRightEyeTransformationMatrix(float(near_z), float(far_z));
     }
     else {
-        glm::mat4(1.0);
+        return glm::mat4(1.0);
     }
 }
 

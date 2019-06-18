@@ -61,6 +61,8 @@ public:
     // Audio Timestamps
 public:
 
+    //------------------------------------------------------------------------------
+    // Set the timestamp for the next drawable.
     void set_audio_timestamp(double timestamp) { m_audio_timestamp = timestamp; }
 
     //------------------------------------------------------------------------------
