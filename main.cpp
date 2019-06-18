@@ -46,9 +46,10 @@
 #include <nvapi.h>
 
 //------------------------------------------------------------------------------
-// Apple
+// Wrapper
 //------------------------------------------------------------------------------
 
+#include <Wrapper.h>
 #include <HWWrapper.h>
 
 //------------------------------------------------------------------------------
@@ -57,230 +58,8 @@
 
 #include "CppUtils.h"
 #include "OpenGLUtils.h"
+#include "OpenVRCompositor.h"
 #include "OpenVRUtils.h"
-#include "StereoDisplay.h"
-#include "Utils.h"
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-class WrapperRenderTarget : public AcquireReleaseWithOwnership
-{
-    //------------------------------------------------------------------------------
-     // Construction/Destruction
-public:
-
-    WrapperRenderTarget()
-    : m_width(0)
-    , m_height(0)
-    {
-    }
-
-    WrapperRenderTarget(size_t width, size_t height/*, bool srgb*/)
-    : m_width(width)
-    , m_height(height)
-    {
-        if ((width == 0) || (height == 0)) {
-            throw std::runtime_error("Valid render target size expected!");
-        }
-
-        toolbox::OpenGLFramebuffer::create_texture_backed(m_framebuffers.data(), m_color_attachments.data(), nullptr, 2, m_width, m_height);
-    }
-
-    ~WrapperRenderTarget()
-    {
-        if (valid()) {
-            toolbox::OpenGLFramebuffer::delete_texture_backed(m_framebuffers.data(), m_color_attachments.data(), nullptr, 2);
-        }
-    }
-
-    //------------------------------------------------------------------------------
-    // Framebuffers
-public:
-
-    bool valid() const noexcept { return (m_width > 0 ? true : false); }
-
-    size_t width() const noexcept { return m_width; }
-    size_t height() const noexcept { return m_height; }
-
-    GLuint framebuffer(size_t eye_index) const { return m_framebuffers[eye_index]; }
-    GLuint color_attachment(size_t eye_index) const { return m_color_attachments[eye_index]; }
-
-    //------------------------------------------------------------------------------
-    // {Private}
-private:
-
-    const size_t                    m_width;                    // Width of the framebuffers
-    const size_t                    m_height;                   // Height of the framebuffers
-
-    std::array<GLuint, 2>           m_framebuffers = {};        // Framebuffers
-    std::array<GLuint, 2>           m_color_attachments = {};   // Framebuffer color attachments
-}; 
-
-class WrapperDrawable : public StereoDrawable
-{
-    //------------------------------------------------------------------------------
-    // Construction/Destruction
-public:
-
-    //------------------------------------------------------------------------------
-    // Create the drawable and acquire the given render target until submit() is
-    // called at which point the render target is released, success or not.
-    WrapperDrawable(std::shared_ptr<HWW::HWWrapper> wrapper, std::shared_ptr<const WrapperRenderTarget> render_target, double audio_timestamp)
-    : m_wrapper(std::move(wrapper))
-    , m_render_target(std::move(render_target))
-    , m_audio_timestamp(audio_timestamp)
-    {
-        m_viewport = glm::ivec4(0, 0, m_render_target->width(), m_render_target->height());
-        
-        if (!m_wrapper) {
-            throw std::runtime_error("Valid wrapper expected!");
-        }
-
-        if (!m_render_target || !m_render_target->valid()) {
-            throw std::runtime_error("Valid render target expected!");
-        }
-
-        assert(m_render_target->owned_by_this_thread());
-    }
-
-    //------------------------------------------------------------------------------
-    // [StereoDrawable]
-public:
-
-    //------------------------------------------------------------------------------
-    // Returns the OpenGL framebuffer name for the given eye or -1 if submit() was
-    // called prior and the drawable is thus no longer considered valid.
-    GLuint framebuffer(size_t eye_index) const noexcept override { return ((eye_index < 2) && m_render_target ? m_render_target->framebuffer(eye_index) : GLuint(-1)); }
-
-    //------------------------------------------------------------------------------
-    // Returns the viewport (in pixels) for the given eye or zeros if submit() was
-    // called prior and the drawable is thus no longer considered valid.
-    glm::ivec4 viewport(size_t eye_index) const noexcept override { return ((eye_index < 2) && m_render_target ? m_viewport : glm::ivec4(0)); }
-
-    //------------------------------------------------------------------------------
-    // Returns true if both eyes were submitted successfully or false otherwise.
-    // The drawable will be invalid after calling submit() in either case. glFlush()
-    // is called upon successful submission of both eyes as recommended by the
-    // OpenVR spec for use with OpenGL.
-    void submit() override
-    {
-        std::shared_ptr<const WrapperRenderTarget> render_target = std::atomic_exchange(&m_render_target, s_invalid_render_target);
-        assert(!m_render_target->valid());
-
-        if (!render_target->valid()) {
-            return;
-        }
-
-        m_wrapper->Render(render_target->color_attachment(0), render_target->color_attachment(1), float(m_audio_timestamp));
-    }
-
-    //------------------------------------------------------------------------------
-    // {Private}
-private:
-
-    static std::shared_ptr<const WrapperRenderTarget>       s_invalid_render_target;
-
-    const std::shared_ptr<HWW::HWWrapper>           m_wrapper;
-    const double                                    m_audio_timestamp;
-
-    std::shared_ptr<const WrapperRenderTarget>      m_render_target;
-    glm::ivec4                                      m_viewport = {};
-};
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-std::shared_ptr<const WrapperRenderTarget> WrapperDrawable::s_invalid_render_target(new WrapperRenderTarget());
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-class WrapperDisplay
-    : public StereoDisplay
-    , public PoseTracker
-{
-    //------------------------------------------------------------------------------
-     // Configuration/Types
-public:
-
-    static constexpr bool FAIL_IF_WATCHDOG_EXPIRES = false;
-
-    //------------------------------------------------------------------------------
-    // Construction/Destruction
-public:
-
-    WrapperDisplay(std::shared_ptr<HWW::HWWrapper> wrapper, size_t width, size_t height)
-    : m_wrapper(std::move(wrapper))
-    , m_render_target(new WrapperRenderTarget(width, height))
-    {
-    }
-
-    //------------------------------------------------------------------------------
-    // Audio Timestamps
-public:
-
-    void set_audio_timestamp(double timestamp) { m_audio_timestamp = timestamp; }
-
-    //------------------------------------------------------------------------------
-    // [StereoDisplay]
-public:
-
-    StereoDrawable_UP wait_next_drawable() const
-    {
-        if (!m_render_target->acquire()) {
-            return nullptr;
-        }
-
-        return StereoDrawable_UP(new WrapperDrawable(m_wrapper, m_render_target, m_audio_timestamp));
-    }
-
-    StereoDrawable_UP wait_next_drawable_for(const std::chrono::microseconds& duration, bool* const try_failed) const override
-    {
-        const AcquireReleaseWithOwnership::AcquireResult result = m_render_target->try_acquire_for(duration);
-
-        if (try_failed) {
-            (*try_failed) = (result == AcquireReleaseWithOwnership::AcquireResult::TRY_FAILED);
-        }
-
-        if (!result) {
-            return nullptr;
-        }
-
-        return StereoDrawable_UP(new WrapperDrawable(m_wrapper, m_render_target, m_audio_timestamp));
-    }
-
-    //------------------------------------------------------------------------------
-    // [PoseTracker]
-public:
-
-    void wait_get_poses() override
-    {
-    }
-
-    const glm::mat4 hmd_pose() const noexcept override
-    {
-        glm::vec3 hmd_position;
-        glm::quat hmd_orientation;
-
-        if (!m_wrapper->GetHMDPose(hmd_position, hmd_orientation)) {
-            return glm::mat4(1.0);
-        }
-
-        const glm::mat4 hmd_rotation = glm::mat4_cast(glm::normalize(hmd_orientation));
-        const glm::mat4 hmd_translation = glm::translate(glm::mat4(1.0), hmd_position);
-
-        return (hmd_translation * hmd_rotation);
-    }
-
-    //------------------------------------------------------------------------------
-    // {Private}
-private:
-
-    const std::shared_ptr<HWW::HWWrapper>           m_wrapper;                  // Wrapper shared with the application
-    std::shared_ptr<const WrapperRenderTarget>      m_render_target;            // Render target shared with the WrapperDrawable instance
-    double                                          m_audio_timestamp = 0.0;    // Timestamp for audio synchronization
-};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1648,7 +1427,10 @@ namespace {
     bool always_use_openvr_pose = false;
     bool always_use_openvr_submit = false;
 
-    std::unique_ptr<HWW::HWWrapper> wrapper;
+    std::unique_ptr<StereoDisplay> stereo_display_inst;
+    std::unique_ptr<PoseTracker> pose_tracker_inst;
+    
+    std::shared_ptr<HWW::HWWrapper> wrapper;
     std::set<GLenum> wrapper_opengl_errors;
 
     std::shared_ptr<Display> stereo_display;

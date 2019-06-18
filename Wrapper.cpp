@@ -14,7 +14,9 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <array>
+#include <mutex>
 #include <sstream>
+#include <thread>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -65,21 +67,21 @@ namespace {
 
 class OpenVRCompositor::RenderTarget : public AcquireReleaseWithOwnership
 {
-    //------------------------------------------------------------------------------
-     // Construction/Destruction
+   //------------------------------------------------------------------------------
+    // Construction/Destruction
 public:
 
     RenderTarget()
-        : m_width(0)
-        , m_height(0)
-        , m_color_space(vr::ColorSpace_Linear)
+    : m_width(0)
+    , m_height(0)
+    , m_color_space(vr::ColorSpace_Linear)
     {
     }
 
     RenderTarget(size_t width, size_t height, vr::EColorSpace color_space)
-        : m_width(width)
-        , m_height(height)
-        , m_color_space(color_space)
+    : m_width(width)
+    , m_height(height)
+    , m_color_space(color_space)
     {
         if ((width == 0) || (height == 0)) {
             throw std::runtime_error("Valid render target size expected!");
@@ -137,7 +139,7 @@ private:
 // OpenVR implementation of StereoDrawable.
 //------------------------------------------------------------------------------
 
-class OpenVRCompositor::Drawable : public StereoDrawable
+class OpenVRCompositor::OpenVRStereoDrawable : public StereoDrawable
 {
     //------------------------------------------------------------------------------
     // Construction/Destruction
@@ -146,14 +148,12 @@ public:
     //------------------------------------------------------------------------------
     // Create the drawable and acquire the given render target until submit() is
     // called at which point the render target is released, success or not.
-    Drawable(
-        vr::IVRCompositor* const compositor,
-        std::shared_ptr<const RenderTarget> render_target,
-        vr::EVRSubmitFlags submit_flags
-    )
-        : m_compositor(compositor)
-        , m_render_target(std::move(render_target))
-        , m_submit_flags(submit_flags)
+    OpenVRStereoDrawable(vr::IVRCompositor* const compositor,
+                         std::shared_ptr<const RenderTarget> render_target,
+                         vr::EVRSubmitFlags submit_flags)
+    : m_compositor(compositor)
+    , m_render_target(std::move(render_target))
+    , m_submit_flags(submit_flags)
     {
         if (!m_compositor) {
             throw std::runtime_error("Valid IVRCompositor expected!");
@@ -266,23 +266,22 @@ private:
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-std::shared_ptr<const OpenVRCompositor::RenderTarget> OpenVRCompositor::Drawable::s_invalid_render_target(new RenderTarget());
+std::shared_ptr<const OpenVRCompositor::RenderTarget> OpenVRCompositor::OpenVRStereoDrawable::s_invalid_render_target(new RenderTarget());
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-OpenVRCompositor::OpenVRCompositor(
-    size_t width,
-    size_t height,
-    vr::EColorSpace color_space,
-    vr::EVRSubmitFlags submit_flags)
-    : m_compositor(vr::VRCompositor())
-    , m_system(vr::VRSystem())
-    , m_render_target(new RenderTarget(width, height, color_space))
-    , m_submit_flags(submit_flags)
+OpenVRCompositor::OpenVRCompositor(vr::IVRCompositor* const compositor,
+                                   size_t width,
+                                   size_t height,
+                                   vr::EColorSpace color_space,
+                                   vr::EVRSubmitFlags submit_flags)
+: m_compositor(compositor)
+, m_render_target(new RenderTarget(width, height, color_space))
+, m_submit_flags(submit_flags)
 {
-    if (!m_compositor && !m_system) {
-        throw std::runtime_error("Valid OpenVR compositor/system expected!");
+    if (!m_compositor) {
+        throw std::runtime_error("Valid OpenVR compositor expected!");
     }
 
     for (size_t i = 0; i < m_render_poses.size(); ++i) {
@@ -297,11 +296,10 @@ OpenVRCompositor::wait_get_poses()
 {
     Watchdog::marker("WaitGetPoses", 100);
 
-    const vr::EVRCompositorError error = m_compositor->WaitGetPoses(
-        m_render_poses.data(),
-        uint32_t(m_render_poses.size()),
-        nullptr,
-        0);
+    const vr::EVRCompositorError error = m_compositor->WaitGetPoses(m_render_poses.data(),
+                                                                    uint32_t(m_render_poses.size()),
+                                                                    nullptr,
+                                                                    0);
 
     bool watchdog_expired = false;
 
@@ -330,18 +328,6 @@ OpenVRCompositor::wait_get_poses()
     }
 }
 
-glm::mat4
-OpenVRCompositor::projection_matrix(size_t eye_index, double near_z, double far_z) const noexcept
-{
-    if (eye_index >= 2) {
-        return glm::mat4(1.0);
-    }
-
-    glm::mat4 m = OpenVRUtils::glm_from_hmd_matrix(m_system->GetProjectionMatrix(vr::EVREye(eye_index), float(near_z), float(far_z)));
-    m *= glm::inverse(OpenVRUtils::glm_from_hmd_matrix(m_system->GetEyeToHeadTransform(vr::EVREye(eye_index))));
-    return m;
-}
-
 StereoDrawable_UP
 OpenVRCompositor::wait_next_drawable() const
 {
@@ -349,7 +335,7 @@ OpenVRCompositor::wait_next_drawable() const
         return nullptr;
     }
 
-    return StereoDrawable_UP(new Drawable(m_compositor, m_render_target, m_submit_flags));
+    return StereoDrawable_UP(new OpenVRStereoDrawable(m_compositor, m_render_target, m_submit_flags));
 }
 
 StereoDrawable_UP
@@ -365,13 +351,7 @@ OpenVRCompositor::wait_next_drawable_for(const std::chrono::microseconds& durati
         return nullptr;
     }
 
-    return StereoDrawable_UP(new Drawable(m_compositor, m_render_target, m_submit_flags));
-}
-
-const glm::mat4
-OpenVRCompositor::hmd_pose() const noexcept
-{
-    return OpenVRUtils::glm_from_hmd_matrix(m_render_poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking);
+    return StereoDrawable_UP(new OpenVRStereoDrawable(m_compositor, m_render_target, m_submit_flags));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

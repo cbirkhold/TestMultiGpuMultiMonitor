@@ -130,6 +130,8 @@ protected:
 
 public:
 
+    virtual glm::mat4 projection_matrix(size_t eye_index, double near_z, double far_z) const noexcept = 0;
+
     virtual StereoDrawable_UP wait_next_drawable() const
     {
         StereoDrawable_UP drawable;

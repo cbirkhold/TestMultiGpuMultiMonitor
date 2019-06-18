@@ -8,8 +8,8 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#ifndef __OPENVR_COMPOSITOR_H__
-#define __OPENVR_COMPOSITOR_H__
+#ifndef __OPENVR_DISPLAY_H__
+#define __OPENVR_DISPLAY_H__
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -31,8 +31,8 @@
 //------------------------------------------------------------------------------
 
 class OpenVRCompositor
-    : public StereoDisplay
-    , public PoseTracker
+: public StereoDisplay
+, public PoseTracker
 {
     //------------------------------------------------------------------------------
     // Configuration/Types
@@ -48,11 +48,11 @@ public:
     // Construction/Destruction
 public:
 
-    OpenVRCompositor(
-        size_t width,
-        size_t height,
-        vr::EColorSpace color_space,
-        vr::EVRSubmitFlags submit_flags);
+    OpenVRCompositor(vr::IVRCompositor* const compositor,
+                     size_t width,
+                     size_t height,
+                     vr::EColorSpace color_space,
+                     vr::EVRSubmitFlags submit_flags);
 
     vr::IVRCompositor* compositor() const noexcept { return m_compositor; }
 
@@ -67,8 +67,6 @@ public:
     // [StereoDisplay]
 public:
 
-    glm::mat4 projection_matrix(size_t eye_index, double near_z, double far_z) const noexcept override;
-
     StereoDrawable_UP wait_next_drawable() const override;
     StereoDrawable_UP wait_next_drawable_for(const std::chrono::microseconds& duration, bool* try_failed) const override;
 
@@ -77,27 +75,25 @@ public:
 public:
 
     void wait_get_poses() override;
-    const glm::mat4 hmd_pose() const noexcept override;
 
     //------------------------------------------------------------------------------
     // {Private}
 private:
 
     class RenderTarget;
-    class Drawable;
+    class OpenVRStereoDrawable;
 
-    vr::IVRCompositor* const                m_compositor;       // Cached VR compositor instance
-    vr::IVRSystem* const                    m_system;           // Cached VR system instance
     TrackedDevicePoses                      m_render_poses;
 
-    std::shared_ptr<const RenderTarget>     m_render_target;    // Render target shared with the Drawable instance
+    vr::IVRCompositor* const                m_compositor;       // Cached VR compositor instance
+    std::shared_ptr<const RenderTarget>     m_render_target;    // Render target shared with the OpenVRStereoDrawable instance
     const vr::EVRSubmitFlags                m_submit_flags;     // Submit flags for the framebuffers
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#endif // __OPENVR_COMPOSITOR_H__
+#endif // __OPENVR_DISPLAY_H__
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

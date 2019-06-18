@@ -1,5 +1,5 @@
 //
-//  OpenVRCompositor.h
+//  Wrapper.h
 //  StereoDisplay
 //
 //  Created by Chris Birkhold on 2/4/19.
@@ -8,60 +8,60 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#ifndef __OPENVR_COMPOSITOR_H__
-#define __OPENVR_COMPOSITOR_H__
+#ifndef __WRAPPER_H__
+#define __WRAPPER_H__
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <array>
 
-#include "_OpenVRApi.h"
+#include "../../_OpenVRApi.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#include "StereoDisplay.h"
+#include "../../StereoDisplay.h"
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace HWW {
+
+    class HWWrapper;
+
+} // namespace HWW
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //------------------------------------------------------------------------------
-// OpenVR implementation of a StereoDisplay/PoseTracker.
+// Wrapper implementation of a StereoDisplay/PoseTracker.
 //------------------------------------------------------------------------------
 
-class OpenVRCompositor
+class WrapperDisplay
     : public StereoDisplay
     , public PoseTracker
 {
     //------------------------------------------------------------------------------
-    // Configuration/Types
+     // Configuration/Types
 public:
 
     static constexpr bool FAIL_IF_WATCHDOG_EXPIRES = false;
 
     //------------------------------------------------------------------------------
-    // A list of tracked device poses large enough to hold the maximum.
-    typedef std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> TrackedDevicePoses;
-
-    //------------------------------------------------------------------------------
     // Construction/Destruction
 public:
 
-    OpenVRCompositor(
-        size_t width,
-        size_t height,
-        vr::EColorSpace color_space,
-        vr::EVRSubmitFlags submit_flags);
+    WrapperDisplay(std::shared_ptr<HWW::HWWrapper> wrapper, size_t width, size_t height);
 
-    vr::IVRCompositor* compositor() const noexcept { return m_compositor; }
+	std::shared_ptr<HWW::HWWrapper> wrapper() const noexcept { return m_wrapper; }
 
     //------------------------------------------------------------------------------
-    // Tracked Poses
+    // Audio Timestamps
 public:
 
-    size_t num_render_poses() const noexcept { return m_render_poses.size(); }
-    const vr::TrackedDevicePose_t& render_pose(size_t index) const { return m_render_poses[index]; }
+    void set_audio_timestamp(double timestamp) { m_audio_timestamp = timestamp; }
 
     //------------------------------------------------------------------------------
     // [StereoDisplay]
@@ -76,7 +76,7 @@ public:
     // [PoseTracker]
 public:
 
-    void wait_get_poses() override;
+    void wait_get_poses() override {}
     const glm::mat4 hmd_pose() const noexcept override;
 
     //------------------------------------------------------------------------------
@@ -86,18 +86,16 @@ private:
     class RenderTarget;
     class Drawable;
 
-    vr::IVRCompositor* const                m_compositor;       // Cached VR compositor instance
-    vr::IVRSystem* const                    m_system;           // Cached VR system instance
-    TrackedDevicePoses                      m_render_poses;
+    const std::shared_ptr<HWW::HWWrapper>       m_wrapper;                  // Wrapper shared with the application
 
-    std::shared_ptr<const RenderTarget>     m_render_target;    // Render target shared with the Drawable instance
-    const vr::EVRSubmitFlags                m_submit_flags;     // Submit flags for the framebuffers
+    std::shared_ptr<const RenderTarget>         m_render_target;            // Render target shared with the WrapperDrawable instance
+    double                                      m_audio_timestamp = 0.0;    // Timestamp for audio synchronization
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#endif // __OPENVR_COMPOSITOR_H__
+#endif // __WRAPPER_H__
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
