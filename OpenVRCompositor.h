@@ -77,7 +77,7 @@ public:
 public:
 
     void wait_get_poses() override;
-    const glm::mat4 hmd_pose() const noexcept override;
+    glm::mat4 hmd_pose() const noexcept override;
 
     //------------------------------------------------------------------------------
     // {Private}

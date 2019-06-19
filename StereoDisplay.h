@@ -172,7 +172,7 @@ protected:
 public:
 
     virtual void wait_get_poses() = 0;
-    virtual const glm::mat4 hmd_pose() const noexcept = 0;
+    virtual glm::mat4 hmd_pose() const noexcept = 0;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

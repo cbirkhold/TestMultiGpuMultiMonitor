@@ -368,7 +368,7 @@ OpenVRCompositor::wait_next_drawable_for(const std::chrono::microseconds& durati
     return StereoDrawable_UP(new Drawable(m_compositor, m_render_target, m_submit_flags));
 }
 
-const glm::mat4
+glm::mat4
 OpenVRCompositor::hmd_pose() const noexcept
 {
     return OpenVRUtils::glm_from_hmd_matrix(m_render_poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking);

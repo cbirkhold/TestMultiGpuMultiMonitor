@@ -2316,7 +2316,7 @@ main(int argc, const char* argv[])
     }
 
     //------------------------------------------------------------------------------
-    // List any OpenGL errors that occured in the wrapper.
+    // List any OpenGL errors that occurred in the wrapper.
     if (!wrapper_opengl_errors.empty()) {
         std::cerr << "Warning: Wrapper had OpenGL errors:" << std::endl;
 
