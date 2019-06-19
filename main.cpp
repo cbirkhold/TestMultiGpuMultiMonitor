@@ -15,6 +15,7 @@
 #include <iostream>
 #include <iomanip>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <thread>
@@ -23,27 +24,17 @@
 // Platform
 //------------------------------------------------------------------------------
 
-#include "_WindowsApi.h"
-#include <dxgi1_6.h>
-#include <wrl.h>
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#include "__WindowsApi.h"
 
 //------------------------------------------------------------------------------
-// GLEW (OpenGL), GLFW, GLM, OpenVR
+// GLEW (OpenGL), GLFW, GLM, NVAPI, OpenVR
 //------------------------------------------------------------------------------
 
 #include "_GLEWApi.h"
 #include "_GLFWApi.h"
 #include "_GLMApi.h"
+#include "_NVApi.h"
 #include "_OpenVRApi.h"
-
-//------------------------------------------------------------------------------
-// NVAPI
-//------------------------------------------------------------------------------
-
-#include <nvapi.h>
 
 //------------------------------------------------------------------------------
 // Wrapper
@@ -57,9 +48,11 @@
 //------------------------------------------------------------------------------
 
 #include "CppUtils.h"
+#include "DisplayConfiguration.h"
 #include "OpenGLUtils.h"
-#include "OpenVRCompositor.h"
 #include "OpenVRUtils.h"
+#include "RenderPoints.h"
+#include "Watchdog.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -73,6 +66,12 @@ namespace {
     // Constants
     //------------------------------------------------------------------------------
 
+#ifdef NDEBUG
+    constexpr bool IS_DEBUG_BUILD = false;
+#else // NDEBUG
+    constexpr bool IS_DEBUG_BUILD = true;
+#endif // ..., NDEBUG
+
     constexpr size_t NUM_EYES = 2;
     constexpr size_t EYE_INDEX_LEFT = 0;
     constexpr size_t EYE_INDEX_RIGHT = 1;
@@ -80,11 +79,7 @@ namespace {
     constexpr int GL_CONTEXT_VERSION_MAJOR = 4;
     constexpr int GL_CONTEXT_VERSION_MINOR = 6;
 
-#ifndef NDEBUG
-    constexpr int GL_OPENGL_DEBUG_CONTEXT = GLFW_TRUE;
-#else // NDEBUG
-    constexpr int GL_OPENGL_DEBUG_CONTEXT = GLFW_FALSE;
-#endif // NDEBUG
+    constexpr int GL_OPENGL_DEBUG_CONTEXT = (IS_DEBUG_BUILD ? GLFW_TRUE : GLFW_FALSE);
 
     constexpr char GLSL_VERSION[] = "#version 460";
 
@@ -100,55 +95,6 @@ namespace {
     //------------------------------------------------------------------------------
     // Utilities
     //------------------------------------------------------------------------------
-
-    const std::string NO_INDENT;
-
-    void print_to_stream(std::ostream& stream, const NV_MOSAIC_GRID_TOPO& display_grid, const std::string& indent = NO_INDENT)
-    {
-        stream << indent << display_grid.rows << "x" << display_grid.columns << " (" << display_grid.displayCount << (display_grid.displayCount == 1 ? " display) " : " displays) ");
-        stream << display_grid.displaySettings.width << "x" << display_grid.displaySettings.height << " @ " << display_grid.displaySettings.freq << " Hz";
-        stream << " = " << (display_grid.displaySettings.width * display_grid.columns) << "x" << (display_grid.displaySettings.height * display_grid.rows) << std::endl;
-
-        for (size_t r = 0; r < display_grid.rows; ++r) {
-            for (size_t c = 0; c < display_grid.columns; ++c) {
-                const NvU32 display_id = display_grid.displays[c + (r * display_grid.columns)].displayId;
-
-                stream << indent << "[" << r << "," << c << "] " << toolbox::StlUtils::hex_insert(display_id, 8) << std::endl;
-            }
-        }
-    }
-
-    void print_display_flags_to_stream(std::ostream& stream, DWORD flags)
-    {
-        stream << toolbox::StlUtils::hex_insert(flags);
-
-        if (flags != 0) {
-            bool first = true;
-
-            if ((flags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) {
-                if (first) { stream << " ("; }
-                else { stream << ", "; }
-                stream << "display attached";
-                first = false;
-            }
-
-            if ((flags & DISPLAY_DEVICE_PRIMARY_DEVICE) == DISPLAY_DEVICE_PRIMARY_DEVICE) {
-                if (first) { stream << " ("; }
-                else { stream << ", "; }
-                stream << "primary display";
-                first = false;
-            }
-
-            if ((flags & DISPLAY_DEVICE_UNSAFE_MODES_ON) == DISPLAY_DEVICE_UNSAFE_MODES_ON) {
-                if (first) { stream << " ("; }
-                else { stream << ", "; }
-                stream << "unsafe modes on";
-                first = false;
-            }
-
-            if (!first) { stream << ")"; }
-        }
-    }
 
 #if GL_VERSION_4_3
     void APIENTRY gl_message_callback(GLenum source_, GLenum type_, GLuint id, GLenum severity, GLsizei length, const GLchar* const message, const void* const userParam)
@@ -219,768 +165,7 @@ namespace {
 #endif // GL_VERSION_4_3
     }
 
-    ////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////////////////////////////////////////////////////////
-
-    //------------------------------------------------------------------------------
-    // rect_t
-    //------------------------------------------------------------------------------
-
-    typedef struct rect_s {
-        long        m_x = 0;
-        long        m_y = 0;
-        long        m_width = 0;
-        long        m_height = 0;
-
-        rect_s() {}
-        rect_s(long x, long y, long w, long h) : m_x(x), m_y(y), m_width(w), m_height(h) {}
-
-        bool operator==(const rect_s& rhs) const noexcept {
-            return ((rhs.m_x == m_x) && (rhs.m_y == m_y) && (rhs.m_width == m_width) && (rhs.m_height == m_height));
-        }
-
-        bool operator!=(const rect_s& rhs) const noexcept {
-            return ((rhs.m_x != m_x) || (rhs.m_y != m_y) || (rhs.m_width != m_width) || (rhs.m_height != m_height));
-        }
-    } rect_t;
-
-    //------------------------------------------------------------------------------
-    // Display
-    //------------------------------------------------------------------------------
-
-    class Display
-    {
-    public:
-
-        static constexpr size_t INVALID_LOGICAL_GPU_INDEX = size_t(-1);
-
-        enum class LogicalGPUIndexSource {
-            DIRECTX,
-            NVAPI,
-        };
-
-    public:
-
-        Display(std::string name, const rect_t& virtual_screen_rect)
-            : m_name(std::move(name))
-            , m_virtual_screen_rect(virtual_screen_rect)
-            , m_render_resolution(virtual_screen_rect.m_width, virtual_screen_rect.m_height)
-        {
-            if (m_name.empty()) {
-                throw std::runtime_error("Valid name expected!");
-            }
-
-            if ((m_virtual_screen_rect.m_width == 0) || (m_virtual_screen_rect.m_height == 0)) {
-                throw std::runtime_error("Valid virtual screen rect expected!");
-            }
-        }
-
-        bool valid_mosaic() const noexcept {
-            if ((m_nv_display_id == 0) || (m_nv_display_handle == nullptr)) {
-                return false;
-            }
-
-            if ((m_nv_num_physical_gpus < 1) || (m_nv_mosaic_num_displays < 2)) {
-                return false;
-            }
-
-            return true;
-        }
-
-    public:
-
-        const std::string& name() const noexcept { return m_name; }
-        const rect_t& virtual_screen_rect() const noexcept { return m_virtual_screen_rect; }
-
-        glm::uvec2 render_resolution() const noexcept { return m_render_resolution; }
-        void set_render_resolution(glm::uvec2 render_resolution) { m_render_resolution = render_resolution; }
-
-        size_t refresh_rate() const noexcept { return m_refresh_rate; }
-        void set_refresh_rate(size_t refresh_rate) { m_refresh_rate = refresh_rate; }
-
-        size_t logical_gpu_index() const noexcept { return m_logical_gpu_index; }
-        void set_logical_gpu_index(size_t logical_gpu_index, LogicalGPUIndexSource source) { m_logical_gpu_index = (logical_gpu_index | (size_t(source) << (sizeof(m_logical_gpu_index) * 4))); }
-
-        NvU32 nv_display_id() const noexcept { return m_nv_display_id; }
-        NvDisplayHandle nv_display_handle() const noexcept { return m_nv_display_handle; }
-        size_t nv_num_physical_gpus() const noexcept { return m_nv_num_physical_gpus; }
-
-        void set_nv_display(NvU32 nv_display_id, NvDisplayHandle nv_display_handle, size_t nv_num_physical_gpus) {
-            m_nv_display_id = nv_display_id;
-            m_nv_display_handle = nv_display_handle;
-            m_nv_num_physical_gpus = nv_num_physical_gpus;
-        }
-
-        size_t nv_mosaic_num_displays() const noexcept { return m_nv_mosaic_num_displays; }
-        void set_nv_mosaic_num_displays(size_t nv_mosaic_num_displays) { m_nv_mosaic_num_displays = nv_mosaic_num_displays; }
-
-    public:
-
-        friend std::ostream& operator<<(std::ostream& stream, const Display& display)
-        {
-            stream << display.m_name << ", LGPU=" << display.m_logical_gpu_index << ", (";
-            stream << display.m_virtual_screen_rect.m_x << " / " << display.m_virtual_screen_rect.m_y << ") [";
-            stream << display.m_virtual_screen_rect.m_width << " x " << display.m_virtual_screen_rect.m_height << "] @ ";
-            stream << display.m_refresh_rate << " Hz, ";
-            stream << "(id=" << toolbox::StlUtils::hex_insert(display.m_nv_display_id);
-            stream << ", handle=" << toolbox::StlUtils::hex_insert(display.m_nv_display_handle);
-            stream << ", num_pgpus=" << display.m_nv_num_physical_gpus << ", num_mosaic_displays=" << display.m_nv_mosaic_num_displays << ")";
-            return stream;
-        }
-
-    private:
-
-        const std::string       m_name;
-        const rect_t            m_virtual_screen_rect;
-        
-        glm::uvec2              m_render_resolution = { 0, 0 };
-        size_t                  m_refresh_rate = 0;
-        size_t                  m_logical_gpu_index = INVALID_LOGICAL_GPU_INDEX;
-
-        NvU32                   m_nv_display_id = 0;
-        NvDisplayHandle         m_nv_display_handle = nullptr;
-        size_t                  m_nv_num_physical_gpus = 0;
-
-        size_t                  m_nv_mosaic_num_displays = 0;
-    };
-
-    //------------------------------------------------------------------------------
-    // DisplayConfiguration
-    //------------------------------------------------------------------------------
-
-    class DisplayConfiguration
-    {
-    public:
-
-        DisplayConfiguration()
-        {
-            //------------------------------------------------------------------------------
-            // Get display info.
-            enum_displays();
-            enum_logical_gpus();
-
-            try {
-                enum_mosaics();
-            }
-            catch (std::exception& e) {
-                std::cerr << "Exception: " << e.what() << std::endl;
-            }
-            catch (...) {
-                std::cerr << "Failed to enumerate mosaics: Unknown exception!" << std::endl;
-            }
-
-            glm::uvec2 vr_render_resolution = glm::uvec2(0, 0);
-            const rect_t vr_virtual_screen_rect = identify_openvr_display(vr_render_resolution);
-
-            //------------------------------------------------------------------------------
-            // Select displays.
-            std::set<std::shared_ptr<Display>> assigned_displays;
-
-            for (const auto& display : m_displays) {
-                const bool is_mosaic = display->valid_mosaic();
-
-                if (is_mosaic) {
-                    if (!m_mosaic_display || (display->nv_mosaic_num_displays() > m_mosaic_display->nv_mosaic_num_displays())) {
-                        m_mosaic_display = display;
-                        assigned_displays.insert(display);
-                    }
-                }
-                //------------------------------------------------------------------------------
-                //! OpenVR does not always return correct y coordinate for virtual screen rect.
-                //! We ignore x also and go by width and height assuming its a unique display
-                //! resolution only used by HMDs.
-                else if ((display->virtual_screen_rect().m_width == vr_virtual_screen_rect.m_width) && (display->virtual_screen_rect().m_height == vr_virtual_screen_rect.m_height)) {
-                    assert(!m_openvr_display);
-                    m_openvr_display = display;
-                    m_openvr_display->set_render_resolution(vr_render_resolution);
-                    assigned_displays.insert(display);
-                }
-            }
-
-            if (!m_mosaic_display && !m_openvr_display) {
-                throw std::runtime_error("Expected a valid Mosaic or OpenVR display!");
-            }
-
-            if (m_mosaic_display) {
-                std::cout << "Mosaic display: " << (*m_mosaic_display) << std::endl;
-            }
-
-            if (m_openvr_display) {
-                std::cout << "OpenVR display: " << (*m_openvr_display) << std::endl;
-            }
-
-            for (const auto& display : m_displays) {
-                if ((!m_mosaic_display || (display->logical_gpu_index() != m_mosaic_display->logical_gpu_index())) &&
-                    (!m_openvr_display || (display->logical_gpu_index() != m_openvr_display->logical_gpu_index())))
-                {
-                    m_control_display = display;
-                    assigned_displays.insert(display);
-                    break;
-                }
-            }
-
-            if (!m_control_display) {
-                for (const auto& display : m_displays) {
-                    if ((display != m_mosaic_display) && ((display != m_openvr_display) || m_is_openvr_display_in_direct_mode)) {
-                        m_control_display = display;
-                        assigned_displays.insert(display);
-                        break;
-                    }
-                }
-            }
-
-            if (!m_control_display) {
-                throw std::runtime_error("Expected a valid control display!");
-            }
-
-            std::cout << "Control display: " << (*m_control_display) << std::endl;
-
-#ifndef NDEBUG
-            for (const auto& display : m_displays) {
-                if (assigned_displays.find(display) == end(assigned_displays)) {
-                    std::cout << "Unassigned display: " << (*display) << std::endl;
-                }
-            }
-#endif // NDEBUG
-
-            if (m_mosaic_display && (m_control_display->logical_gpu_index() == m_mosaic_display->logical_gpu_index())) {
-                std::cout << "Warning: Control display is on same GPU as the Mosaic display!" << std::endl;
-            }
-            else if (m_openvr_display && (m_control_display->logical_gpu_index() == m_openvr_display->logical_gpu_index())) {
-                std::cout << "Warning: Control display is on same GPU as the OpenVR display!" << std::endl;
-            }
-        }
-
-     public:
-
-         std::shared_ptr<Display> control_display() const noexcept { return m_control_display; }
-         std::shared_ptr<Display> mosaic_display() const noexcept { return m_mosaic_display; }
-         std::shared_ptr<Display> openvr_display() const noexcept { return m_openvr_display; }
-         bool openvr_display_in_direct_mode() const noexcept { return m_is_openvr_display_in_direct_mode; }
-
-    private:
-
-        std::vector<std::shared_ptr<Display>>       m_displays;
-
-        std::shared_ptr<Display>                    m_primary_display;
-        std::shared_ptr<Display>                    m_control_display;
-        std::shared_ptr<Display>                    m_mosaic_display;
-        std::shared_ptr<Display>                    m_openvr_display;
-        bool                                        m_is_openvr_display_in_direct_mode = false;
-
-        //------------------------------------------------------------------------------
-        // Get a list of physical displays (monitors) from Windows.
-        void enum_displays()
-        {
-            //------------------------------------------------------------------------------
-            // Get the Virtual Screen geometry.
-            const rect_t virtual_screen(GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
-            const size_t num_virtual_screen_monitors = GetSystemMetrics(SM_CMONITORS);
-
-            std::cout << "Virtual Screen origin: " << virtual_screen.m_x << " / " << virtual_screen.m_y << std::endl;
-            std::cout << "Virtual Screen size: " << virtual_screen.m_width << " x " << virtual_screen.m_height << std::endl;
-            std::cout << "Virtual Screen spans " << num_virtual_screen_monitors << " monitor(s)" << std::endl;
-
-            //------------------------------------------------------------------------------
-            // Enumerate physical displays, each represented by a HMONITOR handle.
-            if (EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC display_context, LPRECT virtual_screen_rect_, LPARAM user_data) {
-                DisplayConfiguration* const this_ = reinterpret_cast<DisplayConfiguration*>(user_data);
-
-                //------------------------------------------------------------------------------
-                // Evaluate virtual screen rectangle.
-                const rect_t virtual_screen_rect = {
-                    virtual_screen_rect_->left,
-                    virtual_screen_rect_->top,
-                    (virtual_screen_rect_->right - virtual_screen_rect_->left),
-                    (virtual_screen_rect_->bottom - virtual_screen_rect_->top)
-                };
-
-                //------------------------------------------------------------------------------
-                // Get additional monitor info.
-                MONITORINFOEX monitor_info = {};
-                monitor_info.cbSize = sizeof(monitor_info);
-
-                std::shared_ptr<Display> display;
-                bool is_primary = false;
-
-                if (GetMonitorInfo(monitor, &monitor_info) != 0) {
-                    std::cout << "Monitor " << monitor_info.szDevice << ": ";
-
-                    display.reset(new Display(monitor_info.szDevice, virtual_screen_rect));
-                    is_primary = ((monitor_info.dwFlags & MONITORINFOF_PRIMARY) == MONITORINFOF_PRIMARY);
-                }
-                else {
-                    std::cout << "Monitor 0x" << toolbox::StlUtils::hex_insert(monitor);
-                }
-
-                std::cout << "(" << virtual_screen_rect.m_x << " / " << virtual_screen_rect.m_y << ") [" << virtual_screen_rect.m_width << " x " << virtual_screen_rect.m_height << "]";
-
-                if (is_primary) {
-                    std::cout << " (primary display)";
-                }
-
-                if (display) {
-                    if (is_primary) {
-                        assert(!this_->m_primary_display);
-                        this_->m_primary_display = display;
-                    }
-
-                    this_->m_displays.emplace_back(std::move(display));
-                }
-
-                std::cout << std::endl;
-
-                //------------------------------------------------------------------------------
-                // ...
-                return TRUE;
-            }, LPARAM(this)) == 0)
-            {
-                throw std::runtime_error("Failed to enumerate monitors!");
-            }
-
-            if (!m_primary_display) {
-                throw std::runtime_error("Failed to identify primary display!");
-            }
-        }
-
-        //------------------------------------------------------------------------------
-        // Which display is connected to which (logical) GPU.
-        void enum_logical_gpus()
-        {
-            //------------------------------------------------------------------------------
-             // Grab DirectX factory.
-            Microsoft::WRL::ComPtr<IDXGIFactory> factory;
-
-            if (FAILED(CreateDXGIFactory(IID_PPV_ARGS(&factory)))) {
-                throw std::runtime_error("Failed to create DXGI factory!");
-            }
-
-            //------------------------------------------------------------------------------
-            // Enumerate DirectX adapters (logical GPUs).
-            UINT adapter_index = 0;
-            IDXGIAdapter* adapter = nullptr;
-
-            while (factory->EnumAdapters(adapter_index, &adapter) != DXGI_ERROR_NOT_FOUND) {
-                DXGI_ADAPTER_DESC adapter_desc = {};
-
-                if (FAILED(adapter->GetDesc(&adapter_desc))) {
-                    std::cerr << "Error: Failed to get adapter description!" << std::endl;
-                    continue;
-                }
-
-                std::cout << "Adapter " << adapter_index << ": ";
-                std::wcout << adapter_desc.Description;
-
-                const uint64_t luid = ((uint64_t(adapter_desc.AdapterLuid.HighPart) << (sizeof(adapter_desc.AdapterLuid.LowPart) * 8)) | adapter_desc.AdapterLuid.LowPart);
-                std::cout << ", " << toolbox::StlUtils::hex_insert(luid) << std::endl;
-
-                //------------------------------------------------------------------------------
-                // Enumerate outputs (displays).
-                UINT output_index = 0;
-                IDXGIOutput* output = nullptr;
-
-                while (adapter->EnumOutputs(output_index, &output) != DXGI_ERROR_NOT_FOUND) {
-                    DXGI_OUTPUT_DESC output_desc = {};
-
-                    if (FAILED(output->GetDesc(&output_desc))) {
-                        std::cerr << "Error: Failed to get output description!" << std::endl;
-                        continue;
-                    }
-
-                    std::cout << "  Output " << output_index << ": ";
-                    std::wcout << output_desc.DeviceName;
-                    std::cout << std::endl;
-
-                    char display_name[sizeof(output_desc.DeviceName) * 4];
-                    size_t display_name_length = 0;
-
-                    wcstombs_s(&display_name_length, display_name, sizeof(display_name), output_desc.DeviceName, _TRUNCATE);
-
-                    const auto display_it = std::find_if(begin(m_displays), end(m_displays), [display_name](const std::shared_ptr<Display>& display) {
-                        return (display->name() == display_name);
-                    });
-
-                    if (display_it == end(m_displays)) {
-                        std::cout << "  Warning: DirectX enumerates display " << display_name << " but Windows does not!" << std::endl;
-                    }
-                    else {
-                        if ((*display_it)->logical_gpu_index() == Display::INVALID_LOGICAL_GPU_INDEX) {
-                            (*display_it)->set_logical_gpu_index(adapter_index, Display::LogicalGPUIndexSource::DIRECTX);
-                        }
-                    }
-
-                    output->Release();
-                    ++output_index;
-                }
-            
-                adapter->Release();
-                ++adapter_index;
-            }
-        }
-
-        //------------------------------------------------------------------------------
-        // Get Mosaic information for displays.
-        void enum_mosaics()
-        {
-            assert(m_primary_display);  // Call enum_displays() first!
-
-            //------------------------------------------------------------------------------
-            // Enumerate displays and note NVIDIA display IDs which are required below.
-            NvLogicalGpuHandle logical_gpu_handles[NVAPI_MAX_LOGICAL_GPUS];
-            NvU32 num_logical_gpus = 0;
-
-            if (NvAPI_EnumLogicalGPUs(logical_gpu_handles, &num_logical_gpus) != NVAPI_OK) {
-                throw std::runtime_error("Failed to enumerate logical GPUs!");
-            }
-
-            NvDisplayHandle display_handle = nullptr;
-
-            for (NvU32 display_index = 0; NvAPI_EnumNvidiaDisplayHandle(display_index, &display_handle) == NVAPI_OK; ++display_index) {
-                NvAPI_ShortString display_name = {};
-
-                if (NvAPI_GetAssociatedNvidiaDisplayName(display_handle, display_name) != NVAPI_OK) {
-                    std::cout << "Warning: NVAPI enumerates nameless display " << toolbox::StlUtils::hex_insert(display_handle) << "!" << std::endl;
-                    continue;
-                }
-
-                const auto display_it = std::find_if(begin(m_displays), end(m_displays), [display_name](const std::shared_ptr<Display>& display) {
-                    return (display->name() == display_name);
-                });
-
-                if (display_it == end(m_displays)) {
-                    std::cout << "Warning: NVAPI enumerates display " << display_name << " but Windows does not!" << std::endl;
-                    continue;
-                }
-
-                NvU32 display_id = 0;
-
-                if (NvAPI_DISP_GetDisplayIdByDisplayName(display_name, &display_id) == NVAPI_OK) {
-                    NvPhysicalGpuHandle physical_gpus[NVAPI_MAX_PHYSICAL_GPUS] = {};
-                    NvU32 num_physical_gpus = 0;
-
-                    if (NvAPI_GetPhysicalGPUsFromDisplay(display_handle, physical_gpus, &num_physical_gpus) != NVAPI_OK) {
-                        throw std::runtime_error("Failed to get physical GPU count!");
-                    }
-
-                    (*display_it)->set_nv_display(display_id, display_handle, num_physical_gpus);
-
-                    if ((*display_it)->logical_gpu_index() == Display::INVALID_LOGICAL_GPU_INDEX) {
-                        NvLogicalGpuHandle logical_gpu_handle = 0;
-
-                        if (NvAPI_GetLogicalGPUFromDisplay(display_handle, &logical_gpu_handle) != NVAPI_OK) {
-                            throw std::runtime_error("Failed to get logical GPU handle!");
-                        }
-
-                        const auto logical_gpu_handle_it = std::find(std::begin(logical_gpu_handles), std::end(logical_gpu_handles), logical_gpu_handle);
-
-                        if (logical_gpu_handle_it == std::end(logical_gpu_handles)) {
-                            throw std::runtime_error("Failed to find logical GPU index!");
-                        }
-
-                        const size_t logical_gpu_index = std::distance(std::begin(logical_gpu_handles), logical_gpu_handle_it);
-                        (*display_it)->set_logical_gpu_index(logical_gpu_index, Display::LogicalGPUIndexSource::NVAPI);
-                    }
-                }
-            }
-
-            //------------------------------------------------------------------------------
-            // Get brief of current mosaic topology.
-            NV_MOSAIC_TOPO_BRIEF mosaic_topology = {};
-            mosaic_topology.version = NVAPI_MOSAIC_TOPO_BRIEF_VER;
-
-            NV_MOSAIC_DISPLAY_SETTING mosaic_display_settings = {};
-            mosaic_display_settings.version = NVAPI_MOSAIC_DISPLAY_SETTING_VER;
-
-            NvS32 mosaic_overlap_x = 0;
-            NvS32 mosaic_overlap_y = 0;
-
-            if (NvAPI_Mosaic_GetCurrentTopo(&mosaic_topology, &mosaic_display_settings, &mosaic_overlap_x, &mosaic_overlap_y) != NVAPI_OK) {
-                throw std::runtime_error("Failed to get mosaic topology!");
-            }
-
-            //------------------------------------------------------------------------------
-            // If a topology is enabled show which one.
-            if (!mosaic_topology.enabled) {
-                if (mosaic_topology.isPossible) {
-                    std::cout << "Warning: Mosaic is DISABLED (but possible)!" << std::endl;
-                    return;
-                }
-                else {
-                    std::cout << "Warning: Mosaic is DISABLED!" << std::endl;
-                    return;
-                }
-            }
-
-            std::cout << "Mosaic is ENABLED: ";
-
-            switch (mosaic_topology.topo) {
-            case NV_MOSAIC_TOPO_1x2_BASIC: std::cout << "1x2"; break;
-            case NV_MOSAIC_TOPO_2x1_BASIC: std::cout << "2x1"; break;
-            case NV_MOSAIC_TOPO_1x3_BASIC: std::cout << "1x3"; break;
-            case NV_MOSAIC_TOPO_3x1_BASIC: std::cout << "3x1"; break;
-            case NV_MOSAIC_TOPO_1x4_BASIC: std::cout << "1x4"; break;
-            case NV_MOSAIC_TOPO_4x1_BASIC: std::cout << "4x1"; break;
-            case NV_MOSAIC_TOPO_2x2_BASIC: std::cout << "2x2"; break;
-            case NV_MOSAIC_TOPO_2x3_BASIC: std::cout << "2x3"; break;
-            case NV_MOSAIC_TOPO_2x4_BASIC: std::cout << "2x4"; break;
-            case NV_MOSAIC_TOPO_3x2_BASIC: std::cout << "3x2"; break;
-            case NV_MOSAIC_TOPO_4x2_BASIC: std::cout << "4x2"; break;
-            case NV_MOSAIC_TOPO_1x5_BASIC: std::cout << "1x5"; break;
-            case NV_MOSAIC_TOPO_1x6_BASIC: std::cout << "1x6"; break;
-            case NV_MOSAIC_TOPO_7x1_BASIC: std::cout << "1x7"; break;
-            case NV_MOSAIC_TOPO_1x2_PASSIVE_STEREO: std::cout << "1x2 passive stereo"; break;
-            case NV_MOSAIC_TOPO_2x1_PASSIVE_STEREO: std::cout << "2x1 passive stereo"; break;
-            case NV_MOSAIC_TOPO_1x3_PASSIVE_STEREO: std::cout << "1x3 passive stereo"; break;
-            case NV_MOSAIC_TOPO_3x1_PASSIVE_STEREO: std::cout << "3x1 passive stereo"; break;
-            case NV_MOSAIC_TOPO_1x4_PASSIVE_STEREO: std::cout << "1x4 passive stereo"; break;
-            case NV_MOSAIC_TOPO_4x1_PASSIVE_STEREO: std::cout << "4x1 passive stereo"; break;
-            case NV_MOSAIC_TOPO_2x2_PASSIVE_STEREO: std::cout << "2x2 passive stereo"; break;
-            default: std::cout << "unknown topology"; break;
-            }
-
-            std::cout << ", overlap (" << mosaic_overlap_x << ", " << mosaic_overlap_y << ")" << std::endl;
-
-            //------------------------------------------------------------------------------
-            // Show current display grid (mosaic) configuration, including where mosaic is
-            // disabled and each display is a 1x1 grid.
-            NvU32 num_grids = 0;
-
-            if (NvAPI_Mosaic_EnumDisplayGrids(nullptr, &num_grids) != NVAPI_OK) {
-                throw std::runtime_error("Failed to enumerate display grids!");
-            }
-
-            std::vector<NV_MOSAIC_GRID_TOPO> display_grids(num_grids);
-
-            std::for_each(begin(display_grids), end(display_grids), [](NV_MOSAIC_GRID_TOPO& display_grid) {
-                display_grid.version = NV_MOSAIC_GRID_TOPO_VER;
-            });
-
-            if (NvAPI_Mosaic_EnumDisplayGrids(display_grids.data(), &num_grids) != NVAPI_OK) {
-                throw std::runtime_error("Failed to enumerate display grids!");
-            }
-
-            //------------------------------------------------------------------------------
-            // In some cases the initially reported number appears to be conservative so
-            // we trim the vector down to the actual size in case.
-            assert(display_grids.size() >= num_grids);
-            display_grids.resize(num_grids);
-
-            //------------------------------------------------------------------------------
-            // Grab information relevant to our display configuration.
-            size_t display_grid_index = 0;
-
-            for (const NV_MOSAIC_GRID_TOPO& display_grid : display_grids) {
-                //------------------------------------------------------------------------------
-                // Print display grid info to console.
-                std::cout << "Display Grid " << display_grid_index++ << std::endl;
-                print_to_stream(std::cout, display_grid, "  ");
-
-                for (size_t display_index = 0; display_index < display_grid.displayCount; ++display_index) {
-                    const NvU32 display_id = display_grid.displays[display_index].displayId;
-
-                    const auto it = std::find_if(begin(m_displays), end(m_displays), [display_id](const std::shared_ptr<Display>& display) {
-                        return (display->nv_display_id() == display_id);
-                    });
-
-                    if (it == end(m_displays)) {
-                        std::cout << "  Warning: NVAPI enumerates display " << toolbox::StlUtils::hex_insert(display_id) << " but Windows does not!" << std::endl;
-                    }
-                    else {
-                        (*it)->set_refresh_rate(display_grid.displaySettings.freq);
-                        (*it)->set_nv_mosaic_num_displays(display_grid.displayCount);
-                        break;
-                    }
-                }
-            }
-        }
-
-        //------------------------------------------------------------------------------
-        // Detect OpenVR HMD.
-        rect_t identify_openvr_display(glm::uvec2& render_resolution)
-        {
-            assert(m_primary_display);  // Call enum_displays() first!
-
-            rect_t virtual_screen_rect;
-
-            vr::IVRSystem* const vr_system = vr::VRSystem();
-
-            if (!vr_system) {
-                return virtual_screen_rect;
-            }
-
-            uint64_t vr_device_luid = 0;
-            vr_system->GetOutputDevice(&vr_device_luid, vr::TextureType_OpenGL);
-            std::cout << "OpenVR output device (LUID): " << toolbox::StlUtils::hex_insert(vr_device_luid) << std::endl;
-
-            if (vr_system->IsDisplayOnDesktop()) {
-                std::cout << "OpenVR is in extended mode" << std::endl;
-
-                vr::IVRExtendedDisplay* const vr_extended_display = vr::VRExtendedDisplay();
-
-                if (vr_extended_display) {
-                    int32_t x = 0;
-                    int32_t y = 0;
-                    uint32_t w = 0;
-                    uint32_t h = 0;
-
-                    vr_extended_display->GetWindowBounds(&x, &y, &w, &h);
-                    std::cout << "OpenVR window bounds: (" << x << " / " << y << ") [" << w << " x " << h << "]" << std::endl;
-
-                    virtual_screen_rect = rect_t(x, y, w, h);
-                    render_resolution = glm::uvec2(w, h);
-
-                    for (size_t i = 0; i < 2; ++i) {
-                        uint32_t x = 0;
-                        uint32_t y = 0;
-
-                        vr_extended_display->GetEyeOutputViewport(vr::EVREye(i), &x, &y, &w, &h);
-                        std::cout << "OpenVR " << (i == vr::Eye_Left ? "left" : "right") << " eye viewport: " << x << ", " << y << ", " << w << ", " << h << std::endl;
-                    }
-                }
-            }
-            else {
-                uint32_t width = 0;
-                uint32_t height = 0;
-
-                vr_system->GetRecommendedRenderTargetSize(&width, &height);
-
-                //------------------------------------------------------------------------------
-                // OpenVR demands that the HMD is attached to the same GPU as the primary
-                // display (if this is not the case the SteamVR will notify the user). Set the
-                // direct mode flag to indicate that the OpenVR display identifies the primary
-                // display as opposed to the extended display scanned out to the HMD.
-                virtual_screen_rect = m_primary_display->virtual_screen_rect();
-                render_resolution = glm::uvec2((width * 2), height);
-                m_is_openvr_display_in_direct_mode = true;
-
-#ifndef NDEBUG
-                verify_primary_display_connected_to_device(vr_device_luid, virtual_screen_rect);
-#endif // NDEBUG
-            }
-
-            return virtual_screen_rect;
-        }
-
-        //------------------------------------------------------------------------------
-        // DirectX appears to be the shortest link between LUID and display name so we
-        // use it to verify the primary display is indeed attached to the same GPU as
-        // the OpenVR HMD.
-        void verify_primary_display_connected_to_device(uint64_t vr_device_luid, const rect_t& primary_display_virtual_screen_rect)
-        {
-            bool primary_display_connected_to_device = false;
-
-            //------------------------------------------------------------------------------
-            // Grab DirectX factory.
-            Microsoft::WRL::ComPtr<IDXGIFactory> factory;
-
-            if (FAILED(CreateDXGIFactory(IID_PPV_ARGS(&factory)))) {
-                throw std::runtime_error("Failed to create DXGI factory!");
-            }
-
-            //------------------------------------------------------------------------------
-            // Find DirectX adapter (GPU) identified by OpenVR.
-            LUID device_luid = {};
-            {
-                device_luid.LowPart = DWORD(vr_device_luid);
-                device_luid.HighPart = LONG(vr_device_luid >> (sizeof(device_luid.LowPart) * 8));
-            }
-
-            UINT adapter_index = 0;
-            IDXGIAdapter* adapter = nullptr;
-
-            while (factory->EnumAdapters(adapter_index, &adapter) != DXGI_ERROR_NOT_FOUND) {
-                DXGI_ADAPTER_DESC adapter_desc = {};
-
-                if (FAILED(adapter->GetDesc(&adapter_desc))) {
-                    std::cerr << "Error: Failed to get adapter description!" << std::endl;
-                    continue;
-                }
-
-                std::cout << "Adapter " << adapter_index << ": ";
-                std::wcout << adapter_desc.Description;
-
-                const uint64_t luid = ((uint64_t(adapter_desc.AdapterLuid.HighPart) << (sizeof(adapter_desc.AdapterLuid.LowPart) * 8)) | adapter_desc.AdapterLuid.LowPart);
-                std::cout << ", " << toolbox::StlUtils::hex_insert(luid) << std::endl;
-
-                const bool is_vr_device_adapter = (adapter_desc.AdapterLuid.LowPart == device_luid.LowPart) && (adapter_desc.AdapterLuid.HighPart == device_luid.HighPart);
-
-                if (is_vr_device_adapter) {
-                    //------------------------------------------------------------------------------
-                    // Enumerate outputs (displays).
-                    UINT output_index = 0;
-                    IDXGIOutput* output = nullptr;
-
-                    while (adapter->EnumOutputs(output_index, &output) != DXGI_ERROR_NOT_FOUND) {
-                        DXGI_OUTPUT_DESC output_desc = {};
-
-                        if (FAILED(output->GetDesc(&output_desc))) {
-                            std::cerr << "Error: Failed to get output description!" << std::endl;
-                            continue;
-                        }
-
-                        std::cout << "  Output " << output_index << ": ";
-                        std::wcout << output_desc.DeviceName;
-
-                        bool first = true;
-
-                        if (output_desc.AttachedToDesktop) {
-                            if (first) { std::cout << " ("; }
-                            else { std::cout << ", "; }
-                            std::cout << "display attached";
-                            first = false;
-                        }
-
-                        MONITORINFO monitor_info = {};
-                        monitor_info.cbSize = sizeof(monitor_info);
-
-                        if (GetMonitorInfo(output_desc.Monitor, &monitor_info)) {
-                            if (monitor_info.dwFlags & MONITORINFOF_PRIMARY) {
-                                if (first) { std::cout << " ("; }
-                                else { std::cout << ", "; }
-                                std::cout << "primary display";
-                                first = false;
-
-                                const rect_t virtual_screen_rect(
-                                    monitor_info.rcMonitor.left,
-                                    monitor_info.rcMonitor.top,
-                                    (monitor_info.rcMonitor.right - monitor_info.rcMonitor.left),
-                                    (monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top));
-
-                                if (virtual_screen_rect != primary_display_virtual_screen_rect) {
-                                    throw std::runtime_error("Expected primary display virtual screen rectangles to match!");
-                                }
-
-                                primary_display_connected_to_device = true;
-                            }
-                        }
-
-                        if (!first) { std::cout << ")"; }
-                        std::cout << std::endl;
-
-                        output->Release();
-                        ++output_index;
-
-                        if (primary_display_connected_to_device) {
-                            break;
-                        }
-                    }
-                }
-
-                adapter->Release();
-                ++adapter_index;
-
-                if (is_vr_device_adapter) {
-                    break;
-                }
-            }
-
-            if (!primary_display_connected_to_device) {
-                throw std::runtime_error("Primary display is not connected to the given GPU (LUID)!");
-            }
-        }
-    };
-
-    ////////////////////////////////////////////////////////////////////////////////
+     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
     HWND stereo_display_window = nullptr;
@@ -1005,11 +190,11 @@ namespace {
             std::cout << "Window created: (" << create_struct->x << " / " << create_struct->y << ") [" << create_struct->cx << " x " << create_struct->cy << "]" << std::endl;
         }
         else if (window_created && (hWnd != stereo_display_window)) {
-            std::cout << "Warning: Received message not associated with the stereo display (msg=" << toolbox::StlUtils::hex_insert(uMsg) << ", param=" << wParam << ", param" << toolbox::StlUtils::hex_insert(lParam) << ")!" << std::endl;
+            std::cerr << "Warning: Received message not associated with the stereo display (msg=" << toolbox::StlUtils::hex_insert(uMsg) << ", param=" << wParam << ", param" << toolbox::StlUtils::hex_insert(lParam) << ")!" << std::endl;
         }
 
         if (uMsg == WM_DISPLAYCHANGE) {
-            std::cout << "Warning: Display change occured. This application is not designed to handle such changes at runtime (msg=" << toolbox::StlUtils::hex_insert(uMsg) << ", param=" << wParam << ", param=" << toolbox::StlUtils::hex_insert(lParam) << ")!" << std::endl;
+            std::cerr << "Warning: Display change occurred. This application is not designed to handle such changes at runtime (msg=" << toolbox::StlUtils::hex_insert(uMsg) << ", param=" << wParam << ", param=" << toolbox::StlUtils::hex_insert(lParam) << ")!" << std::endl;
         }
 
         return DefWindowProc(hWnd, uMsg, wParam, lParam);
@@ -1157,260 +342,131 @@ namespace {
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
 
-    HGLRC create_opengl_affinity_context(HDC& affinity_display_context, HGPUNV gpu, const PIXELFORMATDESCRIPTOR& pixel_format_desc)
-    {
-        //------------------------------------------------------------------------------
-        // Create and setup affinity display context.
-        const HGPUNV gpu_list[2] = { gpu, nullptr };
+    enum class PoseTrackerMode {
+        UI,
+        OPENVR,
+        WRAPPER,
+    };
 
-        affinity_display_context = wglCreateAffinityDCNV(gpu_list);
+    PoseTrackerMode pose_tracker_mode = PoseTrackerMode::UI;
 
-        if (affinity_display_context == nullptr) {
-            throw std::runtime_error("Failed to create affinity display context!");
-        }
-
-        const int pixel_format = ChoosePixelFormat(affinity_display_context, &pixel_format_desc);
-
-        if (pixel_format == 0) {
-            wglDeleteDCNV(affinity_display_context);
-            throw std::runtime_error("Failed to choose pixel format!");
-        }
-
-        if (SetPixelFormat(affinity_display_context, pixel_format, &pixel_format_desc) != TRUE) {
-            wglDeleteDCNV(affinity_display_context);
-            throw std::runtime_error("Failed to set pixel format!");
-        }
-
-        if ((0)) {
-            PIXELFORMATDESCRIPTOR pixel_format_desc = {};
-            {
-                pixel_format_desc.nSize = sizeof(pixel_format_desc);
-                pixel_format_desc.nVersion = 1;
-            };
-
-            if (DescribePixelFormat(affinity_display_context, pixel_format, pixel_format_desc.nSize, &pixel_format_desc) == 0) {
-                wglDeleteDCNV(affinity_display_context);
-                throw std::runtime_error("Failed to describe pixel format!");
-            }
-        }
-
-        //------------------------------------------------------------------------------
-        // Ccreate OpenGL affinity context.
-        const int attrib_list[] = {
-            WGL_CONTEXT_MAJOR_VERSION_ARB, GL_CONTEXT_VERSION_MAJOR,
-            WGL_CONTEXT_MINOR_VERSION_ARB, GL_CONTEXT_VERSION_MINOR,
-            WGL_CONTEXT_FLAGS_ARB, (GL_OPENGL_DEBUG_CONTEXT == GLFW_TRUE ? WGL_CONTEXT_DEBUG_BIT_ARB : 0),
-            0
-        };
-
-        const HGLRC gl_context = wglCreateContextAttribsARB(affinity_display_context, nullptr, attrib_list);
-
-        if (gl_context == nullptr) {
-            wglDeleteDCNV(affinity_display_context);
-            throw std::runtime_error("Failed to create OpenGL context!");
-        }
-
-        //------------------------------------------------------------------------------
-        // ...
-        return gl_context;
-    }
-
-    HDC primary_dc = nullptr;
-    HGLRC primary_gl_context = nullptr;
-
-    HDC support_dc = nullptr;
-    HGLRC support_gl_context = nullptr;
-
-    //------------------------------------------------------------------------------
-    // No specific pixel format is required for an affinity (display) context as it
-    // does not have a default framebuffer, however we do bind to the mosaic window
-    // display context for the final pass and thus must match its pixel format.
-    void create_render_contexts(std::shared_ptr<Display> stereo_display, const PIXELFORMATDESCRIPTOR& pixel_format_desc)
-    {
-        //------------------------------------------------------------------------------
-        // Identify primary/support GPUs.
-        std::deque<std::pair<HGPUNV, size_t>> unassigned_gpus;
-        HGPUNV primary_gpu = nullptr;
-        size_t primary_gpu_index = size_t(-1);
-
-        UINT gpu_index = 0;
-        HGPUNV gpu = nullptr;
-
-        while (wglEnumGpusNV(gpu_index, &gpu)) {
-            std::cout << "OpenGL GPU " << gpu_index << ":" << std::endl;
-
-            //------------------------------------------------------------------------------
-            // Enumerate devices (displays).
-            GPU_DEVICE gpu_device;
-            gpu_device.cb = sizeof(gpu_device);
-
-            bool is_primary_gpu = false;
-
-            for (UINT device_index = 0; wglEnumGpuDevicesNV(gpu, device_index, &gpu_device); ++device_index) {
-                std::cout << "  Device " << device_index << ": ";
-                std::cout << gpu_device.DeviceString << ", " << gpu_device.DeviceName << ", ";
-                print_display_flags_to_stream(std::cout, gpu_device.Flags);
-                std::cout << std::endl;
-
-                if (stereo_display && (stereo_display->name() == gpu_device.DeviceName)) {
-                    is_primary_gpu = true;
-                }
-            }
-
-            if (is_primary_gpu) {
-                assert(!primary_gpu);
-                primary_gpu = gpu;
-                primary_gpu_index = gpu_index;
-            }
-            else {
-                unassigned_gpus.emplace_back(gpu, gpu_index);
-            }
-
-            ++gpu_index;
-        }
-
-        if (!primary_gpu) {
-            if (stereo_display) {
-                throw std::runtime_error("Failed to identify the primary GPU!");
-            }
-
-            if (unassigned_gpus.empty()) {
-                throw std::runtime_error("Failed to identify a primary GPU!");
-            }
-
-            primary_gpu = unassigned_gpus.front().first;
-            primary_gpu_index = unassigned_gpus.front().second;
-            unassigned_gpus.pop_front();
-        }
-
-        if (unassigned_gpus.empty()) {
-            throw std::runtime_error("Failed to identify a support GPU!");
-        }
-
-        const HGPUNV support_gpu = unassigned_gpus.front().first;
-        const size_t support_gpu_index = unassigned_gpus.front().second;
-        unassigned_gpus.pop_front();
-
-        std::cout << "Primary OpenGL GPU: " << primary_gpu_index << std::endl;
-        std::cout << "Support OpenGL GPU: " << support_gpu_index << std::endl;
-
-        //------------------------------------------------------------------------------
-        // Create the OpenGL affinity contexts.
-        assert(primary_gpu != support_gpu);
-        assert(primary_gpu_index != support_gpu_index);
-
-        primary_gl_context = create_opengl_affinity_context(primary_dc, primary_gpu, pixel_format_desc);
-        support_gl_context = create_opengl_affinity_context(support_dc, support_gpu, pixel_format_desc);
-    }
-
-    ////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////////////////////////////////////////////////////////
-
-    class RenderPoints
+    class UIPoseTracker : public PoseTracker
     {
     public:
 
-        static GLuint create_program()
+        void wait_get_poses() {}
+        glm::mat4 hmd_pose() const noexcept { return glm::mat4(1.0); }
+    };
+
+    class OpenVRPoseTracker : public PoseTracker
+    {
+        //------------------------------------------------------------------------------
+        // Configuration/Types
+    public:
+
+        static constexpr bool FAIL_IF_WATCHDOG_EXPIRES = false;
+
+        //------------------------------------------------------------------------------
+        // A list of tracked device poses large enough to hold the maximum.
+        typedef std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> TrackedDevicePoses;
+
+        //------------------------------------------------------------------------------
+        // Construction/Destruction
+    public:
+
+        OpenVRPoseTracker()
+            : m_compositor(vr::VRCompositor())
         {
-            static const char* const vs_string =
-                "#version 460\n"
-                "uniform vec4 u_rect;\n"
-                "uniform mat4 u_mvp;\n"
-                "uniform int u_grid_size;\n"
-                "uniform float u_grid_size_minus_one_recip;\n"
-                "out vec2 v_uv;\n"
-                "void main() {\n"
-                "    int x = (gl_VertexID % u_grid_size);\n"
-                "    int y = (gl_VertexID / u_grid_size);\n"
-                "    vec2 uv = (vec2(x, y) * u_grid_size_minus_one_recip);\n"
-                "    gl_Position = (u_mvp * vec4((u_rect.xy + (uv * u_rect.zw)), 0.0, 1.0));\n"
-                "    v_uv = vec2(uv.x, uv.y);\n"
-                "}\n";
-
-            static const char* const fs_string =
-                "#version 460\n"
-                "uniform vec4 u_color_mask;\n"
-                "in vec2 v_uv;\n"
-                "out vec4 f_color;\n"
-                "void main() {\n"
-                "    float vignette = pow(clamp(((v_uv.x * (1.0f - v_uv.x)) * (v_uv.y * (1.0f - v_uv.y)) * 36.0f), 0.0, 1.0), 4.0);\n"
-                "    f_color = vec4(((v_uv.rg * vignette) * u_color_mask.rg), u_color_mask.b, u_color_mask.a);\n"
-                "}\n";
-
-            try {
-                const GLuint vertex_shader = toolbox::OpenGLShader::create_from_source(GL_VERTEX_SHADER, vs_string);
-                const GLuint fragment_shader = toolbox::OpenGLShader::create_from_source(GL_FRAGMENT_SHADER, fs_string);
-
-                toolbox::OpenGLProgram::attribute_location_list_t attribute_locations;
-                toolbox::OpenGLProgram::frag_data_location_list_t frag_data_locations;
-                const GLuint program = toolbox::OpenGLProgram::create_from_shaders(vertex_shader, fragment_shader, attribute_locations, frag_data_locations);
-
-                s_uniform_location_rect = glGetUniformLocation(program, "u_rect");
-                s_uniform_location_mvp = glGetUniformLocation(program, "u_mvp");
-                s_uniform_location_grid_size = glGetUniformLocation(program, "u_grid_size");
-                s_uniform_location_grid_size_minus_one_recip = glGetUniformLocation(program, "u_grid_size_minus_one_recip");
-                s_uniform_location_color_mask = glGetUniformLocation(program, "u_color_mask");
-
-                return program;
-            }
-            catch (std::exception& e) {
-                std::cerr << "Exception: " << e.what() << std::endl;
-            }
-            catch (...) {
-                std::cerr << "Failed to load program: Unknown exception!" << std::endl;
-            }
-
-            return 0;
         }
 
-        static void set_rect(const float* const ndc_rect)
-        {
-            if (s_uniform_location_rect != -1) {
-                glUniform4fv(s_uniform_location_rect, 1, ndc_rect);
-            }
-        }
+        //------------------------------------------------------------------------------
+        // [PoseTracker]
+    public:
 
-        static void set_mvp(const float* const mvp)
+        void wait_get_poses() override
         {
-            if (s_uniform_location_mvp != -1) {
-                glUniformMatrix4fv(s_uniform_location_mvp, 1, GL_FALSE, mvp);
-            }
-        }
+            Watchdog::marker("WaitGetPoses", 100);
 
-        static void set_color_mask(const float* const color_mask)
-        {
-            if (s_uniform_location_color_mask != -1) {
-                glUniform4fv(s_uniform_location_color_mask, 1, color_mask);
+            const vr::EVRCompositorError error = m_compositor->WaitGetPoses(
+                m_render_poses.data(),
+                uint32_t(m_render_poses.size()),
+                nullptr,
+                0);
+
+            bool watchdog_expired = false;
+
+            if (Watchdog::reset_marker() == Watchdog::MARKER_RESULT_PREVIOUS_MARKER_EXPIRED) {
+                if (FAIL_IF_WATCHDOG_EXPIRES) {
+                    watchdog_expired = true;
+                }
+            }
+
+            bool vr_compositor_errors = (error != vr::VRCompositorError_None);
+
+            if (watchdog_expired || vr_compositor_errors) {
+                std::stringstream stream;
+                bool first = true;
+
+                if (watchdog_expired) {
+                    stream << "WaitGetPoses marker expired!";
+                    first = false;
+                }
+
+                if (vr_compositor_errors) {
+                    if (!first) { stream << ' '; }
+                    stream << "WaitGetPoses failed: " << OpenVRUtils::compositor_error_as_english_description(error);
+                    first = false;
+                }
+
+                throw std::runtime_error(stream.str());
             }
         }
 
-        static void draw(GLuint& vao, size_t grid_size)
+        glm::mat4 hmd_pose() const noexcept override
         {
-            if (!vao) {
-                glGenVertexArrays(1, &vao);
-            }
-
-            glUniform1i(s_uniform_location_grid_size, int(grid_size));
-            glUniform1f(s_uniform_location_grid_size_minus_one_recip, (1.0f / float(grid_size - 1)));
-
-            glBindVertexArray(vao);
-            glDrawArrays(GL_POINTS, 0, GLsizei(grid_size * grid_size));
+            return OpenVRUtils::glm_from_hmd_matrix(m_render_poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking);
         }
 
     private:
 
-        static GLint        s_uniform_location_rect;
-        static GLint        s_uniform_location_mvp;
-        static GLint        s_uniform_location_grid_size;
-        static GLint        s_uniform_location_grid_size_minus_one_recip;
-        static GLint        s_uniform_location_color_mask;
+        vr::IVRCompositor* const        m_compositor;       // Cached VR compositor instance
+        TrackedDevicePoses              m_render_poses = {};
     };
 
-    GLint RenderPoints::s_uniform_location_rect = -1;
-    GLint RenderPoints::s_uniform_location_mvp = -1;
-    GLint RenderPoints::s_uniform_location_grid_size = -1;
-    GLint RenderPoints::s_uniform_location_grid_size_minus_one_recip = -1;
-    GLint RenderPoints::s_uniform_location_color_mask = -1;
+    std::unique_ptr<PoseTracker> pose_tracker_ui;
+    std::unique_ptr<PoseTracker> pose_tracker_openvr;
+    std::unique_ptr<PoseTracker> pose_tracker_wrapper;
+
+    enum class DisplayMode {
+        //------------------------------------------------------------------------------
+        // Render to window default framebuffer, then swap buffers. This mode is chosen
+        // when neither a Mosaic nor OpenVR display are available (this display
+        // configuration is only valid in a debug build) or if a Mosaic display is
+        // available but the wrapper is not enabled.
+        WINDOW_UNDISTORTED,
+
+        //------------------------------------------------------------------------------
+        // Render to OpenVR stereo drawable (user framebuffer), then submit to OpenVR
+        // compositor (in direct or extended mode). This mode is chosen if the OpenVR
+        // display is selected.
+        OPENVR_COMPOSITOR_DISTORTED,
+
+        //------------------------------------------------------------------------------
+        // Render to wrapper stereo drawable (user framebuffer), let wrapper distort
+        // into window default framebuffer, then swap buffers. This mode is chosen when
+        // the Mosaic display is selected, for rendering to the Target Hardware or
+        // testing of that code path with a regular display.
+        WRAPPER_TO_WINDOW_DISTORTED,
+
+        //------------------------------------------------------------------------------
+        // Render to wrapper stereo drawable (user framebuffer), let wrapper distort
+        // into user framebuffer, then submit to OpenVR compositor as distortion already
+        // applied. This mode is for development purposes only, for testing the Target
+        // Hardware code path while rendering to an OpenVR HMD.
+        WRAPPER_TO_OPENVR_COMPOSITOR_DISTORTED,
+    };
+
+    DisplayMode display_mode = DisplayMode::WINDOW_UNDISTORTED;
 
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////
@@ -1418,22 +474,19 @@ namespace {
     constexpr size_t PER_GPU_PASS_FRAMEBUFFER_WIDTH = 2048;
     constexpr size_t PER_GPU_PASS_FRAMEBUFFER_HEIGHT = 2048;
 
-    constexpr size_t PRIMARY_CONTEXT_INDEX = 0;
-    constexpr size_t SUPPORT_CONTEXT_INDEX = 1;
-
-    constexpr float DEFAULT_IPD = 65.0f;
     constexpr size_t RENDER_POINTS_GRID_SIZE = 64;
 
-    bool always_use_openvr_pose = false;
-    bool always_use_openvr_submit = false;
+    std::pair<HDC, HGLRC> primary_context;
+    std::pair<HDC, HGLRC> support_context;
 
-    std::unique_ptr<StereoDisplay> stereo_display_inst;
-    std::unique_ptr<PoseTracker> pose_tracker_inst;
-    
     std::shared_ptr<HWW::HWWrapper> wrapper;
     std::set<GLenum> wrapper_opengl_errors;
 
     std::shared_ptr<Display> stereo_display;
+
+    std::unique_ptr<StereoDisplay> window_display;
+    std::unique_ptr<StereoDisplay> openvr_display;
+    std::unique_ptr<StereoDisplay> wrapper_display;
 
     std::future<void> render_thread;
     std::atomic_bool exit_render_thread = false;
@@ -1442,13 +495,11 @@ namespace {
     GLuint support_framebuffer = 0;
     GLuint support_color_attachment = 0;
 
-    GLuint primary_framebuffer = 0;
-    GLuint primary_color_attachment = 0;
     GLuint support_framebuffer_copy = 0;
     GLuint support_color_attachment_copy = 0;
 
-    GLuint openvr_compositor_framebuffer = 0;
-    GLuint openvr_compositor_color_attachment = 0;
+    constexpr size_t CONTEXT_INDEX_PRIMARY = 0;
+    constexpr size_t CONTEXT_INDEX_SUPPORT = 1;
 
     GLuint render_points_programs[2] = {};
     GLuint render_points_vao[2] = {};
@@ -1483,30 +534,27 @@ namespace {
         // Support context objects.
         //------------------------------------------------------------------------------
 
-        if (!wglMakeCurrent(support_dc, support_gl_context)) {
+        if (!wglMakeCurrent(support_context.first, support_context.second)) {
             throw std::runtime_error("Failed to make OpenGL context current!");
         }
 
         gl_init_debug_messages();
 
         toolbox::OpenGLFramebuffer::create_texture_backed(&support_framebuffer, &support_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-        render_points_programs[SUPPORT_CONTEXT_INDEX] = RenderPoints::create_program();
+        render_points_programs[CONTEXT_INDEX_SUPPORT] = RenderPoints::create_program();
 
         //------------------------------------------------------------------------------
         // Primary context objects.
         //------------------------------------------------------------------------------
 
-        if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
+        if (!wglMakeCurrent(primary_context.first, primary_context.second)) {
             throw std::runtime_error("Failed to make OpenGL context current!");
         }
 
         gl_init_debug_messages();
 
-        toolbox::OpenGLFramebuffer::create_texture_backed(&primary_framebuffer, &primary_color_attachment, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
         toolbox::OpenGLFramebuffer::create_texture_backed(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-        toolbox::OpenGLFramebuffer::create_texture_backed(&openvr_compositor_framebuffer, &openvr_compositor_color_attachment, nullptr, 1, stereo_display->render_resolution().x, stereo_display->render_resolution().y);
-
-        render_points_programs[PRIMARY_CONTEXT_INDEX] = RenderPoints::create_program();
+        render_points_programs[CONTEXT_INDEX_PRIMARY] = RenderPoints::create_program();
     }
 
     void finalize_render_thread() noexcept
@@ -1515,34 +563,136 @@ namespace {
         // Support context objects.
         //------------------------------------------------------------------------------
 
-        toolbox::OpenGLFramebuffer::delete_texture_backed(&support_framebuffer, &support_color_attachment, nullptr, 1);
+        if (wglMakeCurrent(support_context.first, support_context.second)) {
+            toolbox::OpenGLFramebuffer::delete_texture_backed(&support_framebuffer, &support_color_attachment, nullptr, 1);
+            glDeleteProgram(render_points_programs[CONTEXT_INDEX_SUPPORT]);
+        }
 
         //------------------------------------------------------------------------------
         // Primary context objects.
         //------------------------------------------------------------------------------
 
-        toolbox::OpenGLFramebuffer::delete_texture_backed(&primary_framebuffer, &primary_color_attachment, nullptr, 1);
-        toolbox::OpenGLFramebuffer::delete_texture_backed(&support_framebuffer_copy, &support_color_attachment_copy, nullptr, 1);
-        toolbox::OpenGLFramebuffer::delete_texture_backed(&openvr_compositor_framebuffer, &openvr_compositor_color_attachment, nullptr, 1);
+        if (wglMakeCurrent(primary_context.first, primary_context.second)) {
+            glDeleteProgram(render_points_programs[CONTEXT_INDEX_PRIMARY]);
+        }
+    }
+
+    void render(const StereoDisplay& stereo_display, const glm::mat4& hmd_pose, const glm::mat4& wrapper_pose, const std::array<glm::mat4, NUM_EYES>& projection_matrices, double fraction)
+    {
+        //------------------------------------------------------------------------------
+        // Support context.
+        if (!wglMakeCurrent(support_context.first, support_context.second)) {
+            throw std::runtime_error("Failed to make OpenGL context current!");
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer);
+        glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
+        glDisable(GL_SCISSOR_TEST);
+
+        if ((1)) {
+            glClearColor(0.25, 0.25, 0.25, 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            glBlendEquation(GL_MAX);
+
+            glUseProgram(render_points_programs[CONTEXT_INDEX_SUPPORT]);
+            RenderPoints::set_rect(rect);
+
+            const float color_masks[2][4] = { { 1.0f, 0.0f, 0.0, 1.0f }, { 0.0f, 1.0f, 0.0, 1.0f } };
+            render_points(render_points_vao[CONTEXT_INDEX_SUPPORT], 40, hmd_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[0]);
+            render_points(render_points_vao[CONTEXT_INDEX_SUPPORT], 40, wrapper_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[1]);
+
+            glDisable(GL_BLEND);
+        }
+        else {
+            glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+
+        //------------------------------------------------------------------------------
+        // Copy result of support context to primary context.
+        if ((0)) {
+            constexpr size_t NUM_TILES = 8;
+
+            for (size_t v = 0; v < 1/*NUM_TILES*/; ++v) {
+                const GLint y = GLint((PER_GPU_PASS_FRAMEBUFFER_HEIGHT / NUM_TILES) * v);
+
+                for (size_t u = 0; u < 1/*NUM_TILES*/; ++u) {
+                    constexpr GLint LEVEL = 0;
+                    constexpr GLint Z = 0;
+                    constexpr GLint DEPTH = 1;
+
+                    const GLint x = GLint((PER_GPU_PASS_FRAMEBUFFER_WIDTH / NUM_TILES) * u);
+
+                    wglCopyImageSubDataNV(
+                        support_context.second, support_color_attachment,
+                        GL_TEXTURE_2D, LEVEL, x, y, Z,
+                        primary_context.second, support_color_attachment_copy,
+                        GL_TEXTURE_2D, LEVEL, x, y, Z,
+                        (PER_GPU_PASS_FRAMEBUFFER_WIDTH / NUM_TILES / 2), (PER_GPU_PASS_FRAMEBUFFER_HEIGHT / NUM_TILES / 2), DEPTH);
+                }
+            }
+        }
+        else if ((0)) {
+            constexpr GLint LEVEL = 0;
+            constexpr GLint X = 0;
+            constexpr GLint Y = 0;
+            constexpr GLint Z = 0;
+            constexpr GLint DEPTH = 1;
+
+            wglCopyImageSubDataNV(
+                support_context.second, support_color_attachment,
+                GL_TEXTURE_2D, LEVEL, X, Y, Z,
+                primary_context.second, support_color_attachment_copy,
+                GL_TEXTURE_2D, LEVEL, X, Y, Z,
+                PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT, DEPTH);
+        }
+
+        const GLsync support_context_complete = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush();
+
+        //------------------------------------------------------------------------------
+        // Primary context.
+        const StereoRenderTarget& render_target = stereo_display.render_target();
+        stereo_display.make_current();
+
+        for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
+            render_target.bind_eye(eye_index);
+
+            if ((1)) {
+                glClearColor(0.25, 0.25, 0.25, 1.0);
+                glClear(GL_COLOR_BUFFER_BIT);
+
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ONE, GL_ONE);
+                glBlendEquation(GL_MAX);
+
+                glUseProgram(render_points_programs[CONTEXT_INDEX_PRIMARY]);
+                RenderPoints::set_rect(rect);
+
+                const float color_masks[2][4] = { { 1.0f, 0.0f, 0.0, 1.0f }, { 0.0f, 1.0f, 0.0, 1.0f } };
+                render_points(render_points_vao[CONTEXT_INDEX_PRIMARY], 20, hmd_pose, projection_matrices[eye_index], color_masks[0]);
+                render_points(render_points_vao[CONTEXT_INDEX_PRIMARY], 20, wrapper_pose, projection_matrices[eye_index], color_masks[1]);
+
+                glDisable(GL_BLEND);
+            }
+            else {
+                glClearColor(0.5, 0.25, GLclampf(fraction), 1.0);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
+        }
+
+        render_target.unbind_eye();
+
+        //------------------------------------------------------------------------------
+        // Wait for support context to complete rendering for this frame.
+        glWaitSync(support_context_complete, 0, GL_TIMEOUT_IGNORED);
     }
 
     void render_loop()
     {
-        //------------------------------------------------------------------------------
-        // Grab OpenVR system/compositor if we don't have a wrapper or are using any
-        // component of OpenVR alongside/with the wrapper.
-        vr::IVRSystem* vr_system = nullptr;
-        vr::IVRCompositor* vr_compositor = nullptr;
-
-        if (!wrapper || !stereo_display_window || always_use_openvr_pose) {
-            vr_system = vr::VRSystem();
-            vr_compositor = vr::VRCompositor();
-
-            if (!vr_system || !vr_compositor) {
-                throw std::runtime_error("Valid OpenVR system/compositor expected!");
-            }
-        }
-
         //------------------------------------------------------------------------------
         // Evaluate initial eye projection matrices. This can either come from the
         // wrapper or directly from OpenVR.
@@ -1551,8 +701,6 @@ namespace {
 
         //------------------------------------------------------------------------------
         // Render loop.
-        glm::vec4 prev_eye_to_head_translation[NUM_EYES] = {};
-        float hmd_ipd = DEFAULT_IPD;
         double time = 0.0;
 
         for (size_t frame_index = 0; !exit_render_thread; ++frame_index) {
@@ -1560,320 +708,84 @@ namespace {
             const double fraction = modf(time, &seconds);
 
             //------------------------------------------------------------------------------
-            // Read pose information either through the wrapper or directly from OpenVR.
-            const bool use_wrapper_pose = (wrapper && !always_use_openvr_pose);
-            const bool debug_wrapper_pose = (wrapper && DEBUG_WRAPPER_VS_OPENVR_HMD_POSE);
-            const bool wrapper_pose_available = (use_wrapper_pose || debug_wrapper_pose);
+            // If the OpenVR compositor is used at all we must call WaitGetPoses() to keep
+            // the app 'active' from the perspective of OpenVR. This is independently of
+            // whether the OpenVR pose is actually used.
+            if ((pose_tracker_mode == PoseTrackerMode::OPENVR) ||
+                (display_mode == DisplayMode::OPENVR_COMPOSITOR_DISTORTED) ||
+                (display_mode == DisplayMode::WRAPPER_TO_OPENVR_COMPOSITOR_DISTORTED))
+            {
+                assert(pose_tracker_openvr);
+                pose_tracker_openvr->wait_get_poses();
+            }
 
-            glm::mat4 wrapper_pose = (wrapper_pose_available ? pose_tracker_inst->hmd_pose() : glm::mat4(1.0));
-            glm::mat4 projection_matrices[2] = { glm::mat4(1.0), glm::mat4(1.0) };
-            glm::mat4 hmd_pose(1.0);
+            //------------------------------------------------------------------------------
+            // Grab the HMD pose from the active pose tracker.
+            const PoseTracker* active_pose_tracker = nullptr;
+            
+            switch (pose_tracker_mode) {
+            case PoseTrackerMode::UI: active_pose_tracker = pose_tracker_ui.get(); break;
+            case PoseTrackerMode::OPENVR: active_pose_tracker = pose_tracker_openvr.get(); break;
+            case PoseTrackerMode::WRAPPER: active_pose_tracker = pose_tracker_wrapper.get(); break;
+            }
 
-            if (use_wrapper_pose) {
-                //------------------------------------------------------------------------------
-                // If the wrapper is used but we are using the OpenVR compositor for submission
-                // we still need to call WaitGetPoses() to keep the app 'active'.
-                if (!stereo_display_window) {
-                    vr_compositor->WaitGetPoses(nullptr, 0, nullptr, 0);
-                }
+            assert(active_pose_tracker);
+            glm::mat4 hmd_pose = active_pose_tracker->hmd_pose();
 
-                hmd_pose = wrapper_pose;
+            //------------------------------------------------------------------------------
+            // Select the active/final displays.
+            const StereoDisplay* active_stereo_display = nullptr;
+            const StereoDisplay* final_stereo_display = nullptr;
 
-                wrapper->SetIPD(hmd_ipd);
+            switch (display_mode) {
+            case DisplayMode::WINDOW_UNDISTORTED:
+                active_stereo_display = window_display.get();
+                break;
 
+            case DisplayMode::OPENVR_COMPOSITOR_DISTORTED:
+                active_stereo_display = openvr_display.get();
+                break;
+
+            case DisplayMode::WRAPPER_TO_WINDOW_DISTORTED:
+                active_stereo_display = wrapper_display.get();
+                final_stereo_display = window_display.get();
+                break;
+
+            case DisplayMode::WRAPPER_TO_OPENVR_COMPOSITOR_DISTORTED:
+                active_stereo_display = wrapper_display.get();
+                final_stereo_display = openvr_display.get();
+                break;
+            }
+
+            assert(active_stereo_display);
+
+            //------------------------------------------------------------------------------
+            // Grab per-eye transform matrices (these may change at runtime with the IPD).
+            std::array<glm::mat4, NUM_EYES> projection_matrices = { glm::mat4(1.0), glm::mat4(1.0) };
+            
+            if (active_stereo_display) {
                 for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
-                    projection_matrices[eye_index] = stereo_display_inst->projection_matrix(eye_index, near_z, far_z);
+                    projection_matrices[eye_index] = active_stereo_display->projection_matrix(eye_index, near_z, far_z);
                 }
+            }
+
+            //------------------------------------------------------------------------------
+            // Render to active display.
+            render((*active_stereo_display), hmd_pose, hmd_pose, projection_matrices, fraction);
+
+            //------------------------------------------------------------------------------
+            // Submit to display.
+            if (final_stereo_display) {
+                active_stereo_display->render(*final_stereo_display, time);
             }
             else {
-                //------------------------------------------------------------------------------
-                // Get poses (HMD and other devices) from OpenVR.
-                pose_tracker_inst->wait_get_poses();
-                hmd_pose = pose_tracker_inst->hmd_pose();
-
-                //------------------------------------------------------------------------------
-                // Grab per-eye transform matrices (these may change at runtime with the IPD)
-                // and update the eye projection matrices accordingly.
-                for (size_t eye_index = 0; eye_index < NUM_EYES; ++eye_index) {
-                    projection_matrices[eye_index] = stereo_display_inst->projection_matrix(eye_index, near_z, far_z);
-                }
+                final_stereo_display = active_stereo_display;
             }
 
-            if (!wrapper_pose_available) {
-                wrapper_pose = hmd_pose;
-            }
+            final_stereo_display->submit();
 
             //------------------------------------------------------------------------------
-            // Support context.
-            if (!wglMakeCurrent(support_dc, support_gl_context)) {
-                throw std::runtime_error("Failed to make OpenGL context current!");
-            }
-
-            glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer);
-            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-            glDisable(GL_SCISSOR_TEST);
-
-            if ((1)) {
-                glClearColor(0.25, 0.25, 0.25, 1.0);
-                glClear(GL_COLOR_BUFFER_BIT);
-
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_ONE, GL_ONE);
-                glBlendEquation(GL_MAX);
-
-                glUseProgram(render_points_programs[SUPPORT_CONTEXT_INDEX]);
-                RenderPoints::set_rect(rect);
-
-                const float color_masks[2][4] = { { 1.0f, 0.0f, 0.0, 1.0f }, { 0.0f, 1.0f, 0.0, 1.0f } };
-                render_points(render_points_vao[SUPPORT_CONTEXT_INDEX], 40, hmd_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[0]);
-                render_points(render_points_vao[SUPPORT_CONTEXT_INDEX], 40, wrapper_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[1]);
-
-                glDisable(GL_BLEND);
-            }
-            else {
-                glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
-                glClear(GL_COLOR_BUFFER_BIT);
-            }
-
-            //------------------------------------------------------------------------------
-            // Copy result of support context to primary context.
-            if ((0)) {
-                constexpr size_t NUM_TILES = 8;
-
-                for (size_t v = 0; v < 1/*NUM_TILES*/; ++v) {
-                    const GLint y = GLint((PER_GPU_PASS_FRAMEBUFFER_HEIGHT / NUM_TILES) * v);
-
-                    for (size_t u = 0; u < 1/*NUM_TILES*/; ++u) {
-                        constexpr GLint LEVEL = 0;
-                        constexpr GLint Z = 0;
-                        constexpr GLint DEPTH = 1;
-
-                        const GLint x = GLint((PER_GPU_PASS_FRAMEBUFFER_WIDTH / NUM_TILES) * u);
-
-                        wglCopyImageSubDataNV(
-                            support_gl_context, support_color_attachment,
-                            GL_TEXTURE_2D, LEVEL, x, y, Z,
-                            primary_gl_context, support_color_attachment_copy,
-                            GL_TEXTURE_2D, LEVEL, x, y, Z,
-                            (PER_GPU_PASS_FRAMEBUFFER_WIDTH / NUM_TILES / 2), (PER_GPU_PASS_FRAMEBUFFER_HEIGHT / NUM_TILES / 2), DEPTH);
-                    }
-                }
-            }
-            else if ((0)) {
-                constexpr GLint LEVEL = 0;
-                constexpr GLint X = 0;
-                constexpr GLint Y = 0;
-                constexpr GLint Z = 0;
-                constexpr GLint DEPTH = 1;
-
-                wglCopyImageSubDataNV(
-                    support_gl_context, support_color_attachment,
-                    GL_TEXTURE_2D, LEVEL, X, Y, Z,
-                    primary_gl_context, support_color_attachment_copy,
-                    GL_TEXTURE_2D, LEVEL, X, Y, Z,
-                    PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT, DEPTH);
-            }
-
-            const GLsync support_context_complete = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-            glFlush();
-
-            //------------------------------------------------------------------------------
-            // Primary context.
-            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
-                throw std::runtime_error("Failed to make OpenGL context current!");
-            }
-
-            glBindFramebuffer(GL_FRAMEBUFFER, primary_framebuffer);
-            glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-            glDisable(GL_SCISSOR_TEST);
-
-            if ((1)) {
-                glClearColor(0.25, 0.25, 0.25, 1.0);
-                glClear(GL_COLOR_BUFFER_BIT);
-
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_ONE, GL_ONE);
-                glBlendEquation(GL_MAX);
-
-                glUseProgram(render_points_programs[PRIMARY_CONTEXT_INDEX]);
-                RenderPoints::set_rect(rect);
-
-                const float color_masks[2][4] = { { 1.0f, 0.0f, 0.0, 1.0f }, { 0.0f, 1.0f, 0.0, 1.0f } };
-                render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, hmd_pose, projection_matrices[EYE_INDEX_RIGHT], color_masks[0]);
-                render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, wrapper_pose, projection_matrices[EYE_INDEX_RIGHT], color_masks[1]);
-
-                glDisable(GL_BLEND);
-            }
-            else {
-                glClearColor(0.5, 0.25, GLclampf(fraction), 1.0);
-                glClear(GL_COLOR_BUFFER_BIT);
-            }
-
-            if ((1)) {
-                glBindFramebuffer(GL_FRAMEBUFFER, support_framebuffer_copy);
-                glViewport(0, 0, PER_GPU_PASS_FRAMEBUFFER_WIDTH, PER_GPU_PASS_FRAMEBUFFER_HEIGHT);
-                glDisable(GL_SCISSOR_TEST);
-
-                if ((1)) {
-                    glClearColor(0.25, 0.25, 0.25, 1.0);
-                    glClear(GL_COLOR_BUFFER_BIT);
-
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_ONE, GL_ONE);
-                    glBlendEquation(GL_MAX);
-
-                    glUseProgram(render_points_programs[PRIMARY_CONTEXT_INDEX]);
-                    RenderPoints::set_rect(rect);
-
-                    const float color_masks[2][4] = { { 1.0f, 0.0f, 0.0, 1.0f }, { 0.0f, 1.0f, 0.0, 1.0f } };
-                    render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, hmd_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[0]);
-                    render_points(render_points_vao[PRIMARY_CONTEXT_INDEX], 20, wrapper_pose, projection_matrices[EYE_INDEX_LEFT], color_masks[1]);
-
-                    glDisable(GL_BLEND);
-                }
-                else {
-                    glClearColor(0.25, 0.5, GLclampf(fraction), 1.0);
-                    glClear(GL_COLOR_BUFFER_BIT);
-                }
-            }
-
-            //------------------------------------------------------------------------------
-            // Wait for support context to complete rendering for this frame.
-            glWaitSync(support_context_complete, 0, GL_TIMEOUT_IGNORED);
-
-            //------------------------------------------------------------------------------
-            // Combine into stereo display window or submit to the OpenVR compositor.
-            const size_t stereo_display_width = stereo_display->render_resolution().x;
-            const size_t stereo_display_height = stereo_display->render_resolution().y;
-
-            //------------------------------------------------------------------------------
-            // If a stereo display is present we are rendering to a Mosaic display or OpenVR
-            // display in extended mode but are not using the OpenVR compositor/submit.
-            // Whichever way we process the output it must be rendered to the stereo display
-            // context and then swapped to display.
-            if (stereo_display_window) {
-                const HDC stereo_display_dc = GetDC(stereo_display_window);
-
-                if (wglMakeCurrent(stereo_display_dc, primary_gl_context)) {
-                    //------------------------------------------------------------------------------
-                    // If we are in extended mode without using the OpenVR compositor and also don't
-                    // have the wrapper available we can only blit the undistorted eye textures.
-                    if (!wrapper) {
-                        glBlitNamedFramebuffer(
-                            support_framebuffer_copy, 0,
-                            0, 0, GLint(PER_GPU_PASS_FRAMEBUFFER_WIDTH), GLint(PER_GPU_PASS_FRAMEBUFFER_HEIGHT),
-                            0, 0, GLint(stereo_display_width / 2), GLint(stereo_display_height),
-                            GL_COLOR_BUFFER_BIT, GL_LINEAR);
-
-                        glBlitNamedFramebuffer(
-                            primary_framebuffer, 0,
-                            0, 0, GLint(PER_GPU_PASS_FRAMEBUFFER_WIDTH), GLint(PER_GPU_PASS_FRAMEBUFFER_HEIGHT),
-                            GLint(stereo_display_width / 2), 0, GLint(stereo_display_width), GLint(stereo_display_height),
-                            GL_COLOR_BUFFER_BIT, GL_LINEAR);
-                    }
-                    //------------------------------------------------------------------------------
-                    // Let the wrapper handle distortion/color.
-                    else {
-                        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                        glGetError();   // Reset OpenGL error.
-
-                        wrapper->Render(support_color_attachment_copy, primary_color_attachment, float(time));
-
-                        const GLenum error = glGetError();
-
-                        if (error != GL_NO_ERROR) {
-                            wrapper_opengl_errors.insert(error);
-                        }
-                    }
-
-                    //------------------------------------------------------------------------------
-                    // As we are rendering to a window we are responsible for swapping to display.
-                    SwapBuffers(stereo_display_dc);
-                }
-
-                ReleaseDC(stereo_display_window, stereo_display_dc);
-            }
-            //------------------------------------------------------------------------------
-            // If no stereo display is present we are using the OpenVR compositor to render
-            // in direct or extended mode, with or without using the wrapper.
-            else {
-                vr::EVRSubmitFlags submit_flags = vr::Submit_Default;
-                vr::VRTextureBounds_t bounds[NUM_EYES] = {};
-                vr::Texture_t eye_textures[NUM_EYES] = {};
-
-                for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
-                    bounds[eye_index].vMin = 0.0;
-                    bounds[eye_index].vMax = 1.0;
-
-                    eye_textures[eye_index].eType = vr::TextureType_OpenGL;
-                }
-
-                //------------------------------------------------------------------------------
-                // If we don't have the wrapper or are always using the OpenVR compositor to
-                // submit we pass undistorted eye textures to the compositor for processing.
-                if (!wrapper || always_use_openvr_submit) {
-                    for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
-                        bounds[eye_index].uMin = 0.0;
-                        bounds[eye_index].uMax = 1.0;
-
-                        eye_textures[eye_index].eColorSpace = vr::ColorSpace_Linear;
-
-                        if (eye_index == vr::Eye_Left) {
-                            eye_textures[eye_index].handle = reinterpret_cast<void*>(uintptr_t(support_color_attachment_copy));
-                        }
-                        else {
-                            eye_textures[eye_index].handle = reinterpret_cast<void*>(uintptr_t(primary_color_attachment));
-                        }
-                    }
-                }
-                //------------------------------------------------------------------------------
-                // If we are using the wrapper but submit to display through the OpenVR
-                // compositor we first render into an intermediate framebuffer then submit
-                // distorted eye textures to OpenVR.
-                else {
-                    //------------------------------------------------------------------------------
-                    // Use wrapper to process distortion/color.
-                    glBindFramebuffer(GL_FRAMEBUFFER, openvr_compositor_framebuffer);
-                    glGetError();   // Reset OpenGL error.
-
-                    wrapper->Render(support_color_attachment_copy, primary_color_attachment, float(time));
-
-                    const GLenum error = glGetError();
-
-                    if (error != GL_NO_ERROR) {
-                        wrapper_opengl_errors.insert(error);
-                    }
-
-                    //------------------------------------------------------------------------------
-                    // Submit pre-processed (distortion/color) eye textures to the OpenVR compositor.
-                    submit_flags = vr::Submit_LensDistortionAlreadyApplied;
-
-                    for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
-                        if (eye_index == vr::Eye_Left) {
-                            bounds[eye_index].uMin = 0.0;
-                            bounds[eye_index].uMax = 0.5;
-                        }
-                        else {
-                            bounds[eye_index].uMin = 0.5;
-                            bounds[eye_index].uMax = 1.0;
-                        }
-
-                        eye_textures[eye_index].eColorSpace = vr::ColorSpace_Gamma;
-                        eye_textures[eye_index].handle = reinterpret_cast<void*>(uintptr_t(openvr_compositor_color_attachment));
-                    }
-                }
-
-                for (size_t eye_index = 0; eye_index < 2; ++eye_index) {
-                    const vr::EVRCompositorError error = vr_compositor->Submit(vr::EVREye(eye_index), &eye_textures[eye_index], &bounds[eye_index], submit_flags);
-
-                    if (error != vr::VRCompositorError_None) {
-                        std::cerr << "Error: " << error << std::endl;
-                    }
-                }
-
-                glFlush();
-            }
-
+            // Advance time/frame.
             time += (1.0 / 90.0);
             render_thread_frame_index = frame_index;
         }
@@ -1950,8 +862,7 @@ main(int argc, const char* argv[])
     std::cout << "vmi-player - Copyright (c) 2019 Mine One GmbH d.b.a ViewMagic. All rights reserved." << std::endl;
 
     bool enable_wrapper = false;
-    bool always_use_openvr = false;
-    bool always_use_openvr_compositor = false;
+    bool always_use_openvr_display = false;
 
     for (int arg_index = 1; arg_index < argc; ++arg_index) {
         // Allow disabling arguments by adding '' in front.
@@ -1961,27 +872,16 @@ main(int argc, const char* argv[])
         else if ((!strcmp(argv[arg_index], "-?")) || (!strcmp(argv[arg_index], "--help"))) {
             std::cout << std::endl;
             std::cout << "\t-h/--help                     Show command line options." << std::endl;
-            std::cout << "\t--enable-wrapper              Use the wrapper library for present for display." << std::endl;
-            std::cout << "\t--force-openvr                Use the OpenVR display even if a Mosaic display is also available." << std::endl;
-            std::cout << "\t--force-openvr-compositor     Use the OpenVR compositor in extended mode instead of a separate window (implies --force-openvr)." << std::endl;
-            std::cout << "\t--force-openvr-pose           Use the OpenVR HMD pose even if the wrapper is enabled (implies --force-openvr)." << std::endl;
-            std::cout << "\t--force-openvr-submit         Use the OpenVR compositor to submit frames even if the wrapper is enabled (implies ---force-openvr-compositor)." << std::endl;
+            std::cout << "\t--enable-wrapper              Use the wrapper library where applicable." << std::endl;
+            std::cout << "\t--force-openvr-display        Use the OpenVR display even if a Mosaic display is also available." << std::endl;
+
             return EXIT_SUCCESS;
         }
         else if (!strcmp(argv[arg_index], "--enable-wrapper")) {
             enable_wrapper = true;
         }
-        else if (!strcmp(argv[arg_index], "--force-openvr")) {
-            always_use_openvr = true;
-        }
-        else if (!strcmp(argv[arg_index], "--force-openvr-compositor")) {
-            always_use_openvr_compositor = true;
-        }
-        else if (!strcmp(argv[arg_index], "--force-openvr-pose")) {
-            always_use_openvr_pose = true;
-        }
-        else if (!strcmp(argv[arg_index], "--force-openvr-submit")) {
-            always_use_openvr_submit = true;
+        else if (!strcmp(argv[arg_index], "--force-openvr-display")) {
+            always_use_openvr_display = true;
         }
         else {
             std::cerr << "Error: Invalid argument '" << argv[arg_index] << "'!" << std::endl;
@@ -1989,13 +889,10 @@ main(int argc, const char* argv[])
         }
     }
 
-    always_use_openvr_compositor |= (always_use_openvr_submit);
-    always_use_openvr |= (always_use_openvr_compositor | always_use_openvr_pose | always_use_openvr_submit);
-
     //------------------------------------------------------------------------------
     // Initialize NVAPI.
     if (NvAPI_Initialize() != NVAPI_OK) {
-        std::cout << "Warning: Failed to initialize NVAPI!" << std::endl;
+        std::cerr << "Warning: Failed to initialize NVAPI!" << std::endl;
     }
     else {
         atexit([]() {
@@ -2067,13 +964,8 @@ main(int argc, const char* argv[])
 
         std::cout << "NOT using the wrapper" << std::endl;
     }
-    else {
-        std::cerr << "Error: OpenVR is not installed or HMD is not present!" << std::endl;
-        return EXIT_FAILURE;
-    }
 
     //------------------------------------------------------------------------------
-    // Keep log a bit cleaner by giving the VR sytstem a chance to complete its
     // Keep log a bit cleaner by giving the VR system a chance to complete its
     // asynchronous startup before we go on.
     std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -2131,7 +1023,6 @@ main(int argc, const char* argv[])
 
             //------------------------------------------------------------------------------
             // "For RGBA pixel types, it is the size of the color buffer, excluding the
-            // alpha bitplanes." [PIXELFORMATDESCRIPTOR documentation]
             // alpha bit planes." [PIXELFORMATDESCRIPTOR documentation]
             pixel_format_desc.iPixelType = PFD_TYPE_RGBA;
             pixel_format_desc.cColorBits = 24;
@@ -2139,32 +1030,25 @@ main(int argc, const char* argv[])
 
         //------------------------------------------------------------------------------
         // Select stereo display.
-        if (display_configuration.openvr_display() && (always_use_openvr || !display_configuration.mosaic_display())) {
+        if (display_configuration.openvr_display() && (always_use_openvr_display || !display_configuration.mosaic_display())) {
+            if (IS_DEBUG_BUILD && enable_wrapper) {
+                display_mode = DisplayMode::WRAPPER_TO_OPENVR_COMPOSITOR_DISTORTED;
+                pose_tracker_mode = PoseTrackerMode::WRAPPER;
+            }
+            else {
+                display_mode = DisplayMode::OPENVR_COMPOSITOR_DISTORTED;
+                pose_tracker_mode = PoseTrackerMode::OPENVR;
+            }
+
             stereo_display = display_configuration.openvr_display();
 
             if (!display_configuration.openvr_display_in_direct_mode()) {
-                std::cout << "Using the OpenVR display in exended mode ";
-                
-                if (!always_use_openvr_compositor) {
-                    std::cout << "through an application window" << std::endl;
-                    stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
-                }
-                else {
-                    std::cout << "through the OpenVR compositor" << std::endl;
-                }
+                std::cout << "Using the OpenVR display in extended mode" << std::endl;
 
-                //------------------------------------------------------------------------------
-                // If the HMD is not in direct mode and we are using our own 'fullscreen' window
-                // move the OpenVR compositor window out of the way else bring it to the front.
                 vr::IVRCompositor* const vr_compositor = vr::VRCompositor();
 
                 if (vr_compositor) {
-                    if (always_use_openvr_compositor) {
-                        vr_compositor->CompositorBringToFront();
-                    }
-                    else {
-                        vr_compositor->CompositorGoToBack();
-                    }
+                    vr_compositor->CompositorBringToFront();
                 }
             }
             else {
@@ -2172,6 +1056,15 @@ main(int argc, const char* argv[])
             }
         }
         else {
+            if (enable_wrapper) {
+                display_mode = DisplayMode::WRAPPER_TO_WINDOW_DISTORTED;
+                pose_tracker_mode = PoseTrackerMode::WRAPPER;
+            }
+            else {
+                display_mode = DisplayMode::WINDOW_UNDISTORTED;
+                pose_tracker_mode = PoseTrackerMode::UI;
+            }
+
             stereo_display = display_configuration.mosaic_display();
             stereo_display_window = create_stereo_display_window(stereo_display, pixel_format_desc);
 
@@ -2181,48 +1074,58 @@ main(int argc, const char* argv[])
         std::cout << "Stereo display: " << (*stereo_display) << std::endl;
 
         //------------------------------------------------------------------------------
-        // Create render contexts.
-        create_render_contexts(stereo_display, pixel_format_desc);
+        // Create render contexts. Required for initializing the stereo display
+        // abstraction below.
+        DisplayConfiguration::create_render_contexts(
+            primary_context,
+            support_context,
+            stereo_display,
+            pixel_format_desc,
+            GL_CONTEXT_VERSION_MAJOR,
+            GL_CONTEXT_VERSION_MINOR
+        );
+
+        std::pair<HDC, HGLRC> window_context(GetDC(stereo_display_window), primary_context.second);
 
         //------------------------------------------------------------------------------
-        // Initialize wrapper if used and create stereo display abstraction.
-        if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
-            throw std::runtime_error("Failed to make OpenGL context current!");
-        }
+        // Initialize the stereo display abstraction (which includes initialization of
+        // the wrapper in its proper context. The stereo display constructor will make
+        // the given display/OpenGL context current so we reset to the control window
+        // context at the end.
+        switch (display_mode) {
+        case DisplayMode::WINDOW_UNDISTORTED:
+            window_display.reset(new WindowStereoDisplay(window_context, stereo_display->render_resolution().x, stereo_display->render_resolution().y, ColorSpace::LINEAR, 0.5, 0.060));
+            break;
 
-        if (enable_wrapper) {
-            try {
-                glGetError();   // Reset OpenGL error.
+        case DisplayMode::OPENVR_COMPOSITOR_DISTORTED:
+            openvr_display.reset(new OpenVRStereoDisplay(primary_context, vr::Submit_Default, 2048, 1024, ColorSpace::LINEAR));
+            break;
 
-                wrapper->Initialize();
-                wrapper->SetIPD(DEFAULT_IPD);
-                wrapper->SetTrackerPredictionTime(0.044f);
-                wrapper->SetViewportDimentions(stereo_display->render_resolution().x, stereo_display->render_resolution().y);
+        case DisplayMode::WRAPPER_TO_WINDOW_DISTORTED:
+            wrapper_display.reset(new WrapperStereoDisplay(primary_context, 2048, 1024, ColorSpace::LINEAR, wrapper));
+            window_display.reset(new WindowStereoDisplay(window_context, stereo_display->render_resolution().x, stereo_display->render_resolution().y, ColorSpace::LINEAR, 0.5, 0.060));
+            break;
 
-                const GLenum error = glGetError();
-
-                if (error != GL_NO_ERROR) {
-                    wrapper_opengl_errors.insert(error);
-                }
-
-                stereo_display_inst.reset(new WrapperDisplay(wrapper, 1024, 1024));
-                pose_tracker_inst.reset(new WrapperDisplay(wrapper, 1024, 1024));
-            }
-            catch (std::exception& e) {
-                std::cerr << "Exception: " << e.what() << std::endl;
-                return EXIT_FAILURE;
-            }
-            catch (...) {
-                std::cerr << "Failed to initialize wrapper: Unknown exception!" << std::endl;
-                return EXIT_FAILURE;
-            }
-        }
-        else {
-            stereo_display_inst.reset(new OpenVRCompositor(1024, 1024, vr::ColorSpace_Linear, vr::Submit_Default));
-            pose_tracker_inst.reset(new OpenVRCompositor(1024, 1024, vr::ColorSpace_Linear, vr::Submit_Default));
+        case DisplayMode::WRAPPER_TO_OPENVR_COMPOSITOR_DISTORTED:
+            wrapper_display.reset(new WrapperStereoDisplay(primary_context, 2048, 1024, ColorSpace::LINEAR, wrapper));
+            openvr_display.reset(new OpenVRStereoDisplay(primary_context, vr::Submit_LensDistortionAlreadyApplied, 2048, 1024, ColorSpace::LINEAR, OpenVRStereoDisplay::CREATE_SINGLE_FRAMEBUFFER_TAG));
+            break;
         }
 
         glfwMakeContextCurrent(control_window);
+
+        //------------------------------------------------------------------------------
+        // Now that the wrapper and OpenVR are fully initialized create the pose
+        // wrappers before creating the render thread which will use them.
+        pose_tracker_ui.reset(new UIPoseTracker());
+
+        if (vr::VRCompositor()) {
+            pose_tracker_openvr.reset(new OpenVRPoseTracker());
+        }
+
+        if (enable_wrapper) {
+            pose_tracker_wrapper.reset(new WrapperPoseTracker(wrapper));
+        }
 
         //------------------------------------------------------------------------------
         // Create render thread.
@@ -2281,7 +1184,7 @@ main(int argc, const char* argv[])
         //------------------------------------------------------------------------------
         // Finalize wrapper.
         if (wrapper) {
-            if (!wglMakeCurrent(primary_dc, primary_gl_context)) {
+            if (!wglMakeCurrent(primary_context.first, primary_context.second)) {
                 throw std::runtime_error("Failed to make OpenGL context current!");
             }
 

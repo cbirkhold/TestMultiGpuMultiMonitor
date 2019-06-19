@@ -17,16 +17,9 @@
 
 #include <vector>
 #include <string>
+#include <tuple>
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#if defined(__APPLE__)
-#include <OpenGL/gl3.h>
-#include <OpenGL/gl3ext.h>
-#elif defined(_WIN32)
-#include <GL/glew.h>
-#endif
+#include "_OpenGLApi.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -100,7 +93,7 @@ namespace toolbox {
     //
     // Fragment data locations are bound to a location and index by name. If the
     // index is zero (default) the zero-based location must be less than
-    // GL_MAX_DRAW_BUFFERS and if index is one the lcoation must be less than
+    // GL_MAX_DRAW_BUFFERS and if index is one the location must be less than
     // GL_MAX_DUAL_SOURCE_DRAW_BUFFERS. Binding will only occur for valid parameters
     // and if no in-shader layout specification was provided. The actually bound
     // locations and indices are returned for all given (and only those) valid

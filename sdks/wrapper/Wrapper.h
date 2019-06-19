@@ -14,9 +14,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#include <array>
-
-#include "../../_OpenVRApi.h"
+#include <set>
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -36,12 +34,65 @@ namespace HWW {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //------------------------------------------------------------------------------
-// Wrapper implementation of a StereoDisplay/PoseTracker.
+// Wrapper implementation of a StereoDisplay.
 //------------------------------------------------------------------------------
 
-class WrapperDisplay
-    : public StereoDisplay
-    , public PoseTracker
+class WrapperStereoDisplay : public StereoDisplay
+{
+    //------------------------------------------------------------------------------
+     // Configuration/Types
+public:
+
+    static constexpr bool FAIL_IF_WATCHDOG_EXPIRES = false;
+    static constexpr float DEFAULT_IPD = 65.0f;
+
+    //------------------------------------------------------------------------------
+    // Construction/Destruction
+public:
+
+    WrapperStereoDisplay(
+        std::pair<HDC, HGLRC> context,
+        size_t width,
+        size_t height,
+        ColorSpace color_space,
+        std::shared_ptr<HWW::HWWrapper> wrapper
+    );
+
+    const std::set<GLenum>& wrapper_opengl_errors() const noexcept { return m_wrapper_opengl_errors; }
+
+    //------------------------------------------------------------------------------
+    // [StereoDisplay]
+public:
+
+    glm::mat4 projection_matrix(size_t eye_index, double near_z, double far_z) const noexcept override;
+
+    const StereoRenderTarget& render_target() const noexcept override { return m_render_target; }
+
+    void submit() const override
+    {
+        throw std::runtime_error("Submitting is not supported by this implementation!");
+    }
+
+    void render(const StereoDisplay& stereo_display, double timestamp) const override;
+
+    //------------------------------------------------------------------------------
+    // {Private}
+private:
+
+    const StereoRenderTarget                    m_render_target;
+
+    const std::shared_ptr<HWW::HWWrapper>       m_wrapper;
+    mutable std::set<GLenum>                    m_wrapper_opengl_errors;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//------------------------------------------------------------------------------
+// Wrapper implementation of a PoseTracker.
+//------------------------------------------------------------------------------
+
+class WrapperPoseTracker : public PoseTracker
 {
     //------------------------------------------------------------------------------
      // Configuration/Types
@@ -53,45 +104,22 @@ public:
     // Construction/Destruction
 public:
 
-    WrapperDisplay(std::shared_ptr<HWW::HWWrapper> wrapper, size_t width, size_t height);
+    explicit WrapperPoseTracker(std::shared_ptr<HWW::HWWrapper> wrapper);
 
-	std::shared_ptr<HWW::HWWrapper> wrapper() const noexcept { return m_wrapper; }
-
-    //------------------------------------------------------------------------------
-    // Audio Timestamps
-public:
-
-    //------------------------------------------------------------------------------
-    // Set the timestamp for the next drawable.
-    void set_audio_timestamp(double timestamp) { m_audio_timestamp = timestamp; }
-
-    //------------------------------------------------------------------------------
-    // [StereoDisplay]
-public:
-
-    glm::mat4 projection_matrix(size_t eye_index, double near_z, double far_z) const noexcept override;
-
-    StereoDrawable_UP wait_next_drawable() const override;
-    StereoDrawable_UP wait_next_drawable_for(const std::chrono::microseconds& duration, bool* try_failed) const override;
+    std::shared_ptr<HWW::HWWrapper> wrapper() const noexcept { return m_wrapper; }
 
     //------------------------------------------------------------------------------
     // [PoseTracker]
 public:
 
     void wait_get_poses() override {}
-    const glm::mat4 hmd_pose() const noexcept override;
+    glm::mat4 hmd_pose() const noexcept override;
 
     //------------------------------------------------------------------------------
     // {Private}
 private:
 
-    class RenderTarget;
-    class Drawable;
-
-    const std::shared_ptr<HWW::HWWrapper>       m_wrapper;                  // Wrapper shared with the application
-
-    std::shared_ptr<const RenderTarget>         m_render_target;            // Render target shared with the WrapperDrawable instance
-    double                                      m_audio_timestamp = 0.0;    // Timestamp for audio synchronization
+    const std::shared_ptr<HWW::HWWrapper>       m_wrapper;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
