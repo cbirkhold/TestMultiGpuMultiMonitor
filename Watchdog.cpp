@@ -72,9 +72,12 @@ namespace {
     {
     public:
 
+        typedef std::chrono::hours hours;
         typedef std::chrono::milliseconds milliseconds;
         typedef std::chrono::steady_clock steady_clock;
         typedef std::chrono::time_point<steady_clock> time_point;
+
+        static constexpr hours ALMOST_INDEFINITELY = hours(8766);
 
     public:
 
@@ -130,7 +133,7 @@ namespace {
                 // this function as much as possible.
                 ++m_marker_sequence;
                 m_marker_name = (name ? name : "<nullptr>");
-                m_marker_timeout = (timeout == 0 ? time_point::max() : (steady_clock::now() + milliseconds(timeout)));
+                m_marker_timeout = (now + (timeout == 0 ? ALMOST_INDEFINITELY : milliseconds(timeout)));
             }
 
             //------------------------------------------------------------------------------
@@ -188,7 +191,7 @@ namespace {
                 assert(m_marker_sequence == 0);
                 assert(m_marker_timeout == time_point::max());
 
-                decltype(m_marker_timeout) timeout = time_point::max();
+                decltype(m_marker_timeout) timeout = (steady_clock::now() + ALMOST_INDEFINITELY);
 
                 while (!m_terminate_thread) {
                     const decltype(m_marker_sequence) sequence = m_marker_sequence;
@@ -207,11 +210,16 @@ namespace {
                             std::cout << "Warning: " << (m_marker_name ? m_marker_name : "<nullptr>") << " (" << sequence << "): expired!" << std::endl;
                         }
 
-                        timeout = time_point::max();       // Wait indefinitely for a new marker
+                        timeout += ALMOST_INDEFINITELY;     // Wait 'indefinitely' for a new marker
                     }
                     else {
                         timeout = m_marker_timeout;
                     }
+
+                    //------------------------------------------------------------------------------
+                    // We can't actually wait indefinitely as the implementations on some platforms
+                    // won't allow it.
+                    assert(timeout != time_point::max());
                 }
 
                 {
